@@ -56,10 +56,7 @@ dir.create("salidas/mapas", recursive = TRUE, showWarnings = FALSE)
 # DTM hidrologicamente corregido. Se proponen varios nombres posibles
 # usados en el flujo anterior. El script empleara el primero que exista.
 archivos_dtm_candidatos <- c(
-  "salidas/mapas/DTM_Burnt_Filled_Clipped.tif",
-  "datos/procesados/dtm_hidrocorregido.tif",
-  "datos/procesados/DTM_Burnt_Filled_Clipped.tif",
-  "datos/brutos/dtm_recortado.tif"
+  "datos/procesados/DTM_Burnt_Filled_Clipped.tif"
 )
 
 # Cuenca. Si no existe, el script usa directamente las celdas no-NA del DTM.

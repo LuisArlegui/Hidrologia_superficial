@@ -10,18 +10,6 @@
 # - Exportar el HU de Clark como q_unitario_m3_s_por_mm
 # - Preparar la entrada para la convolucion del script 016
 #
-# Entradas principales:
-# - salidas/tablas/014_curva_tiempo_area_Clark.csv
-# - salidas/tablas/014_resumen_tiempo_area_Clark.csv
-# - opcionalmente, salidas/tablas/010_lluvia_efectiva_SCS_CN_largo.csv
-#
-# Salidas principales:
-# - salidas/tablas/015_HU_Clark_largo.csv
-# - salidas/tablas/015_HU_Clark_base.csv
-# - salidas/tablas/015_HU_Clark_resumen.csv
-# - salidas/figuras/015_HU_Clark.png
-# - salidas/figuras/015_HU_Clark_componentes.png
-#
 ############################################################
 
 
@@ -59,7 +47,6 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 archivo_curva_014 <- "salidas/tablas/014_curva_tiempo_area_Clark.csv"
 archivo_resumen_014 <- "salidas/tablas/014_resumen_tiempo_area_Clark.csv"
 
-# Se usa solo para duplicar el HU por periodo de retorno si existe.
 archivos_010_candidatos <- c(
   "salidas/tablas/010_lluvia_efectiva_SCS_CN_largo.csv",
   "salidas/tablas/010_lluvia_efectiva_largo.csv",
@@ -77,8 +64,7 @@ salida_figura_componentes <- "salidas/figuras/015_HU_Clark_componentes.png"
 
 # 3. PARAMETROS EDITABLES ====
 
-# Paso temporal del HU. Si se deja NULL, se intenta leer de la curva 014.
-# Conviene que coincida con el dt del hietograma efectivo del script 010.
+# Paso temporal del HU. Si se deja NULL, se intenta leer del 010 y despues del 014.
 dt_min_manual <- NULL
 
 # Parametro de almacenamiento lineal de Clark, K o R.
@@ -90,15 +76,13 @@ K_fraccion_tc <- 0.60
 K_h_manual <- 1.0
 
 # Duracion adicional de la cola de recesion.
-# Se prolonga el calculo hasta que el caudal sea pequeno o hasta este limite.
 factor_cola_K <- 6
 factor_cola_Tc <- 3
-um_pasos_minimos_cola <- 6
-um_pasos_maximos_extra <- 200
+num_pasos_minimos_cola <- 6
+num_pasos_maximos_extra <- 200
 umbral_cola_fraccion_Qp <- 0.001
 
 # Correccion final de volumen.
-# TRUE asegura que la integral del HU corresponda exactamente a 1 mm sobre la cuenca.
 corregir_volumen <- TRUE
 
 # Si TRUE, duplica el HU base para todos los T_anios encontrados en el script 010.
@@ -119,25 +103,25 @@ primer_archivo_existente <- function(rutas, obligatorio = FALSE, etiqueta = "arc
   return(NA_character_)
 }
 
-buscar_columna <- function(datos, candidatas, etiqueta = "columna", obligatorio = TRUE) {
-  candidatas <- candidatas[candidatas %in% names(datos)]
-  if (length(candidatas) > 0) return(candidatas[1])
-  if (obligatorio) {
-    stop(
-      "No se encontro una columna obligatoria para ", etiqueta, ".\n",
-      "Candidatas: ", paste(candidatas, collapse = ", "), "\n",
-      "Columnas disponibles: ", paste(names(datos), collapse = ", ")
-    )
-  }
-  return(NA_character_)
-}
-
 obtener_valor_resumen <- function(resumen, candidatas, defecto = NA_real_) {
   col <- candidatas[candidatas %in% names(resumen)]
   if (length(col) == 0) return(defecto)
   val <- suppressWarnings(as.numeric(resumen[[col[1]]][1]))
   if (!is.finite(val)) return(defecto)
   val
+}
+
+extraer_dt_min_010 <- function(lluvia_010) {
+  if (is.null(lluvia_010)) return(NA_real_)
+  if (!"dt_min" %in% names(lluvia_010)) return(NA_real_)
+  val <- unique(suppressWarnings(as.numeric(lluvia_010$dt_min)))
+  val <- val[is.finite(val) & val > 0]
+  if (length(val) == 0) return(NA_real_)
+  val[1]
+}
+
+valor_valido <- function(x) {
+  length(x) == 1 && is.finite(x) && x > 0
 }
 
 calcular_K_h <- function(tc_h) {
@@ -153,9 +137,6 @@ calcular_K_h <- function(tc_h) {
 }
 
 normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
-  # Admite distintas estructuras de salida del script 014.
-  # Preferencia: area_intervalo_km2. Si no existe, fraccion_intervalo.
-  # Si solo existe fraccion/area acumulada, se diferencia.
   nms <- names(curva)
   
   col_t <- c(
@@ -164,7 +145,6 @@ normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
   )
   col_t <- col_t[col_t %in% nms]
   if (length(col_t) == 0) {
-    # Si no hay columna temporal, se construye con el indice.
     curva$tiempo_h <- seq(dt_h, by = dt_h, length.out = nrow(curva))
     col_t <- "tiempo_h"
   } else {
@@ -221,7 +201,6 @@ normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
     stop("El histograma tiempo-area tiene area nula o no valida.")
   }
   
-  # Ajuste para que la suma coincida exactamente con A_km2.
   curva <- curva %>%
     mutate(
       area_intervalo_km2 = area_intervalo_km2_calc * A_km2 / suma_area,
@@ -238,10 +217,8 @@ construir_HU_Clark_base <- function(hist_ta, A_km2, tc_h, dt_h, K_h) {
   dt_s <- dt_h * 3600
   volumen_unitario_m3 <- A_km2 * 1000 # 1 mm sobre 1 km2 = 1000 m3
   
-  # Hidrograma de traslacion: cada intervalo de area aporta 1 mm durante dt.
   I_m3_s <- hist_ta$area_intervalo_km2 * 1000 / dt_s
   
-  # Prolongar con ceros para representar la cola de almacenamiento.
   n_extra <- ceiling(max(
     factor_cola_K * K_h / dt_h,
     factor_cola_Tc * tc_h / dt_h,
@@ -252,7 +229,6 @@ construir_HU_Clark_base <- function(hist_ta, A_km2, tc_h, dt_h, K_h) {
   I_ext <- c(I_m3_s, rep(0, n_extra))
   tiempo_h <- seq(0, by = dt_h, length.out = length(I_ext))
   
-  # Almacenamiento lineal: solucion exacta para entrada constante por intervalo.
   alpha <- exp(-dt_h / K_h)
   O <- numeric(length(I_ext))
   O[1] <- I_ext[1] * (1 - alpha)
@@ -262,7 +238,6 @@ construir_HU_Clark_base <- function(hist_ta, A_km2, tc_h, dt_h, K_h) {
     }
   }
   
-  # Recorte suave de cola cuando el caudal es despreciable, manteniendo un minimo.
   Qp_tmp <- max(O, na.rm = TRUE)
   if (is.finite(Qp_tmp) && Qp_tmp > 0) {
     idx_pico <- which.max(O)
@@ -276,7 +251,6 @@ construir_HU_Clark_base <- function(hist_ta, A_km2, tc_h, dt_h, K_h) {
     }
   }
   
-  # Correccion de volumen para garantizar que el HU representa exactamente 1 mm.
   volumen_HU_m3 <- sum(O, na.rm = TRUE) * dt_s
   factor_correccion <- 1
   if (corregir_volumen && is.finite(volumen_HU_m3) && volumen_HU_m3 > 0) {
@@ -335,18 +309,26 @@ if (!is.na(archivo_010)) {
   lluvia_010 <- read_csv(archivo_010, show_col_types = FALSE)
 }
 
+#-----------------------------------------------------------
+# Lectura opcional de dt desde 010 y 014
+#-----------------------------------------------------------
+# Se define aqui para evitar errores si alguno de los archivos no existe
+# o si no contiene la columna dt_min.
+
+dt_min_010 <- extraer_dt_min_010(lluvia_010)
+
 
 # 7. PARAMETROS HIDROLOGICOS DESDE 014 ====
 
 A_km2 <- obtener_valor_resumen(
   resumen_014,
-  c("area_total_Clark_km2"),
+  c("area_total_Clark_km2", "A_km2", "area_km2", "area_total_km2", "area_cuenca_km2"),
   defecto = NA_real_
 )
 
 tc_h <- obtener_valor_resumen(
   resumen_014,
-  c("tc_h_006"),
+  c("tc_h_006", "tc_h", "Tc_h", "tiempo_concentracion_h"),
   defecto = NA_real_
 )
 
@@ -358,13 +340,13 @@ dt_min_014 <- obtener_valor_resumen(
 
 # Inferencias si el resumen no contiene los datos.
 if (!is.finite(A_km2)) {
-  posibles_A <- c("A_km2", "area_total_km2", "area_cuenca_km2")
+  posibles_A <- c("area_total_Clark_km2", "A_km2", "area_total_km2", "area_cuenca_km2")
   col_A <- posibles_A[posibles_A %in% names(curva_014)]
   if (length(col_A) > 0) A_km2 <- suppressWarnings(as.numeric(curva_014[[col_A[1]]][1]))
 }
 
 if (!is.finite(tc_h)) {
-  posibles_tc <- c("tc_h_006")
+  posibles_tc <- c("tc_h_006", "tc_h", "Tc_h", "tiempo_concentracion_h")
   col_tc <- posibles_tc[posibles_tc %in% names(curva_014)]
   if (length(col_tc) > 0) tc_h <- suppressWarnings(as.numeric(curva_014[[col_tc[1]]][1]))
 }
@@ -387,14 +369,14 @@ if (!is.finite(dt_min_014)) {
   }
 }
 
-# Si existe el 010, se prefiere su dt para mantener consistencia con la convolucion.
 #-----------------------------------------------------------
 # Resolucion robusta de dt
 #-----------------------------------------------------------
-
-valor_valido <- function(x) {
-  length(x) == 1 && is.finite(x)
-}
+# Prioridad:
+# 1) dt_min_manual si el usuario lo fija
+# 2) dt_min del script 010, para mantener coherencia con la convolucion
+# 3) dt_min del script 014
+# 4) 30 min como respaldo
 
 dt_min <- if (valor_valido(dt_min_manual)) {
   dt_min_manual
@@ -408,8 +390,20 @@ dt_min <- if (valor_valido(dt_min_manual)) {
 
 dt_h <- dt_min / 60
 
-if (!is.finite(A_km2) || A_km2 <= 0) stop("No se pudo determinar A_km2 de forma valida.")
-if (!is.finite(tc_h) || tc_h <= 0) stop("No se pudo determinar tc_h de forma valida.")
+if (!is.finite(A_km2) || A_km2 <= 0) {
+  stop(
+    "No se pudo determinar A_km2 de forma valida.\n",
+    "Columnas disponibles en 014_resumen: ", paste(names(resumen_014), collapse = ", "), "\n",
+    "Columnas disponibles en 014_curva: ", paste(names(curva_014), collapse = ", ")
+  )
+}
+if (!is.finite(tc_h) || tc_h <= 0) {
+  stop(
+    "No se pudo determinar tc_h de forma valida.\n",
+    "Columnas disponibles en 014_resumen: ", paste(names(resumen_014), collapse = ", "), "\n",
+    "Columnas disponibles en 014_curva: ", paste(names(curva_014), collapse = ", ")
+  )
+}
 if (!is.finite(dt_h) || dt_h <= 0) stop("No se pudo determinar dt_h de forma valida.")
 
 K_h <- calcular_K_h(tc_h)
@@ -447,13 +441,13 @@ HU_base <- HU_base %>%
     } else {
       rep(0, n())
     },
-    
     t_adim = if (tiempo_pico_h > 0) {
       tiempo_h / tiempo_pico_h
     } else {
       rep(0, n())
     }
   )
+
 
 # 10. DUPLICAR POR PERIODOS DE RETORNO SI EXISTEN ====
 
@@ -481,6 +475,12 @@ resumen <- tibble(
   tc_min = tc_h * 60,
   dt_min = dt_min,
   dt_h = dt_h,
+  dt_min_origen = case_when(
+    valor_valido(dt_min_manual) ~ "manual",
+    valor_valido(dt_min_010) ~ "script_010",
+    valor_valido(dt_min_014) ~ "script_014",
+    TRUE ~ "defecto_30_min"
+  ),
   modo_K = modo_K,
   K_fraccion_tc = if_else(modo_K == "fraccion_tc", K_fraccion_tc, NA_real_),
   K_h = K_h,
@@ -584,6 +584,7 @@ cat("\nConfiguracion Clark:\n")
 cat("A =", round(A_km2, 4), "km2\n")
 cat("Tc =", round(tc_h, 4), "h\n")
 cat("dt =", round(dt_min, 3), "min\n")
+cat("origen dt =", resumen$dt_min_origen[1], "\n")
 cat("modo_K =", modo_K, "\n")
 cat("K =", round(K_h, 4), "h\n")
 cat("corregir_volumen =", corregir_volumen, "\n")
