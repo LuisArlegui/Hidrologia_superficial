@@ -1,4 +1,11 @@
 # Hidrología superficial con R
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20287572-blue.svg)](https://doi.org/10.5281/zenodo.20287572)
+
+[![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
+
+[![R](https://img.shields.io/badge/language-R-blue.svg)](https://www.r-project.org/)
+
+[![Version](https://img.shields.io/badge/version-v1.0-green.svg)]()
 
 Scripts de R para el análisis hidrológico de cuencas mediante:
 
@@ -8,13 +15,24 @@ Scripts de R para el análisis hidrológico de cuencas mediante:
 
 Los scripts están orientados a docencia universitaria en geología, ingeniería y ciencias ambientales.
 
+---
+
+## Documentación y DOI
+
+La guía metodológica completa asociada a este repositorio está disponible en Zenodo. El documento PDF describe el flujo de trabajo completo integrando QGIS, SAGA GIS y scripts desarrollados en R.
+
+https://doi.org/10.5281/zenodo.20287572
+
+
+---
+
 ## Uso recomendado IMPORTANTE
 
-Abrir el archivo:
+Abrir el siguiente archivo en RStudio para trabajar con rutas relativas y estructura reproducible de proyecto.
 
 `hidrologia_superficial.Rproj`
 
-mediante RStudio para trabajar con rutas relativas y estructura reproducible del proyecto.
+
 ---
 
 ## Contenido
