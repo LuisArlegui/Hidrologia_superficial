@@ -48,3 +48,48 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 .positai
+# =====================================================
+# HIDROLOGIA / GIS
+# =====================================================
+
+# Datos brutos y procesados
+datos/brutos/
+datos/procesados/
+
+# Resultados generados automáticamente
+salidas/
+
+# Raster
+*.tif
+*.tiff
+*.asc
+*.grd
+*.sdat
+*.sgrd
+
+# Vector GIS
+*.gpkg
+*.shp
+*.dbf
+*.shx
+*.prj
+*.cpg
+*.qmd
+
+# LiDAR / nubes de puntos
+*.las
+*.laz
+*.ply
+*.e57
+
+# QGIS temporales y backups
+*.qgz~
+*.qgs~
+.qgis2/
+.qgis3/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
