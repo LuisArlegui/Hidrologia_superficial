@@ -9,9 +9,15 @@
 # - Eliminar fechas imposibles
 # - Calcular máximos anuales
 # - Ajustar SQRT-ETmax, Gumbel y Log-Pearson III
+# - Calcular intervalos de confianza mediante bootstrap
 # - Exportar lluvias de diseño Pd(T)
 #
+# Nota v2:
+# - Este script no usa capas vectoriales ni GeoPackage.
+# - Mantiene rutas y salidas normalizadas dentro del proyecto.
+#
 ############################################################
+
 
 # 0. PAQUETES ====
 
@@ -27,37 +33,57 @@ library(tidyr)
 library(lubridate)
 
 
-# 1. PARAMETROS DE ENTRADA ====
+# 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
-
-archivo_csv <- "datos/brutos/valmadrid_lluvia.csv"
-
-usar_csv2 <- FALSE
-
-T_ret <- c(2, 5, 10, 25, 50, 100, 200, 500)
-
-
-# 2. RUTAS DE SALIDA ====
 
 dir.create("datos/procesados", recursive = TRUE, showWarnings = FALSE)
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
 dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
-salida_diaria <- "datos/procesados/precipitacion_diaria_limpia.csv"
-salida_maximos <- "datos/procesados/precipitacion_maxima_anual.csv"
 
-salida_estadisticos <- "salidas/tablas/estadisticos_precipitacion.csv"
-salida_lluvias <- "salidas/tablas/lluvias_diseno_comparacion.csv"
+# 2. PARAMETROS DE ENTRADA ====
 
-salida_curvas <- "salidas/figuras/curvas_retorno.png"
-salida_diferencias <- "salidas/figuras/diferencias_vs_gumbel.png"
-salida_curvas_ic <- "salidas/figuras/curvas_retorno_con_IC.png"
+archivo_csv <- "datos/brutos/valmadrid_lluvia.csv" # EDITAR con el nombre de tu archivo con las lluvias
+
+# TRUE para CSV con separador ';' y coma decimal.
+# FALSE para CSV estándar con separador ',' y punto decimal.
+usar_csv2 <- FALSE
+
+# Periodos de retorno a calcular.
+T_ret <- c(2, 5, 10, 25, 50, 100, 200, 500)
+
+# Conversión de la precipitación original.
+# En muchas series AEMET antiguas los valores están en décimas de mm.
+factor_escala_precipitacion <- 0.1
+
+# Número mínimo de días válidos para aceptar un año hidrológico/natural.
+dias_minimos_anio <- 330
+
+# Bootstrap para intervalos de confianza.
+calcular_IC_bootstrap <- TRUE
+nboot <- 1000
+semilla_bootstrap <- 1234
 
 
-# 3. FUNCIONES AUXILIARES ====
+# 3. RUTAS DE SALIDA ====
+
+salida_diaria <- "datos/procesados/003_precipitacion_diaria_limpia.csv"
+salida_maximos_todos <- "datos/procesados/003_precipitacion_maxima_anual_todos_los_anios.csv"
+salida_maximos <- "datos/procesados/003_precipitacion_maxima_anual.csv"
+
+salida_estadisticos <- "salidas/tablas/003_estadisticos_precipitacion.csv"
+salida_lluvias <- "salidas/tablas/003_lluvias_diseno_comparacion.csv"
+salida_anios_excluidos <- "salidas/tablas/003_anios_excluidos_precipitacion.csv"
+
+salida_curvas <- "salidas/figuras/003_curvas_retorno.png"
+salida_diferencias <- "salidas/figuras/003_diferencias_vs_gumbel.png"
+salida_curvas_ic <- "salidas/figuras/003_curvas_retorno_con_IC.png"
+
+
+# 4. FUNCIONES AUXILIARES ====
 
 skewness_sample <- function(x) {
   x <- x[is.finite(x)]
@@ -70,7 +96,7 @@ skewness_sample <- function(x) {
   if (!is.finite(s) || s <= 0) return(0)
   
   g1 <- (n / ((n - 1) * (n - 2))) * sum(((x - xbar) / s)^3)
-  return(g1)
+  g1
 }
 
 weibull_return_period <- function(x) {
@@ -83,7 +109,7 @@ weibull_return_period <- function(x) {
 }
 
 
-# 4. METODO SQRT-ETMAX ====
+# 5. METODO SQRT-ETMAX ====
 
 sqrt_etmax_params <- function(media, sdv) {
   
@@ -98,7 +124,7 @@ sqrt_etmax_params <- function(media, sdv) {
   Cv <- sdv / media
   
   if (Cv < 0.19 || Cv > 0.99) {
-    stop("El metodo SQRT-ETmax esta parametrizado para 0.19 <= Cv <= 0.99.")
+    stop("El metodo SQRT-ETmax esta parametrizado para 0.19 <= Cv <= 0.99. Cv = ", round(Cv, 4))
   }
   
   if (Cv >= 0.19 && Cv < 0.30) {
@@ -145,7 +171,7 @@ sqrt_etmax_F <- function(x, media, sdv) {
   alpha <- pars$alpha
   
   F_x <- exp(-k * (1 + sqrt(alpha * x)) * exp(-sqrt(alpha * x)))
-  return(F_x)
+  F_x
 }
 
 sqrt_etmax_quantile <- function(T, media, sdv) {
@@ -171,8 +197,7 @@ sqrt_etmax_quantile <- function(T, media, sdv) {
 }
 
 
-
-# 5. METODO DE GUMBEL ====
+# 6. METODO DE GUMBEL ====
 
 qgumbel_T <- function(T, media, sdv) {
   
@@ -185,10 +210,11 @@ qgumbel_T <- function(T, media, sdv) {
   mu <- media - gamma_euler * beta
   
   xT <- mu - beta * log(-log(p))
-  return(xT)
+  xT
 }
 
-# 6. METODO LOG-PEARSON III ====
+
+# 7. METODO LOG-PEARSON III ====
 
 qlp3_T <- function(T, x) {
   
@@ -225,11 +251,11 @@ qlp3_T <- function(T, x) {
   }
   
   xT <- 10^yT
-  return(xT)
+  xT
 }
 
 
-# 7. LECTURA Y TRANSFORMACION DE DATOS DIARIOS====
+# 8. LECTURA Y TRANSFORMACION DE DATOS DIARIOS ====
 
 if (!file.exists(archivo_csv)) {
   stop("No se encuentra el archivo: ", archivo_csv)
@@ -255,8 +281,6 @@ if (length(cols_p_existentes) == 0) {
   stop("No se han encontrado columnas P1...P31.")
 }
 
-factor_escala_precipitacion <- 0.1
-
 serie_diaria <- datos_raw %>%
   select(ID, year, MES, all_of(cols_p_existentes)) %>%
   pivot_longer(
@@ -270,13 +294,8 @@ serie_diaria <- datos_raw %>%
     MES = as.integer(MES),
     fecha_txt = sprintf("%04d-%02d-%02d", year, MES, dia),
     fecha = suppressWarnings(ymd(fecha_txt)),
-    
     P_mm = as.numeric(P_mm),
-    
-    # Valores negativos = precipitación inapreciable
     P_mm = ifelse(P_mm < 0, 0, P_mm),
-    
-    # Conversión desde décimas de mm a mm
     P_mm = P_mm * factor_escala_precipitacion
   ) %>%
   filter(
@@ -286,16 +305,10 @@ serie_diaria <- datos_raw %>%
   select(ID, fecha, year, MES, dia, P_mm) %>%
   arrange(fecha)
 
-
 write_csv(serie_diaria, salida_diaria)
 
 
-
-# 8. MAXIMOS ANUALES ====
-
-# 8. MAXIMOS ANUALES ====
-
-dias_minimos_anio <- 330
+# 9. MAXIMOS ANUALES ====
 
 maximos_anuales_todos <- serie_diaria %>%
   group_by(year) %>%
@@ -313,24 +326,25 @@ maximos_anuales <- maximos_anuales_todos %>%
     Pmax > 0
   )
 
-write_csv(maximos_anuales_todos,
-          "datos/procesados/precipitacion_maxima_anual_todos_los_anios.csv")
+anios_excluidos <- maximos_anuales_todos %>%
+  filter(n_dias_validos < dias_minimos_anio | Pmax <= 0)
 
+write_csv(maximos_anuales_todos, salida_maximos_todos)
 write_csv(maximos_anuales, salida_maximos)
+write_csv(anios_excluidos, salida_anios_excluidos)
 
 prec <- maximos_anuales$Pmax
 prec <- prec[is.finite(prec)]
 
+if (length(prec) < 10) {
+  warning("La serie de maximos anuales tiene menos de 10 datos validos.")
+}
+
 cat("\nAños excluidos por incompletos o Pmax = 0:\n")
-print(
-  maximos_anuales_todos %>%
-    filter(n_dias_validos < dias_minimos_anio | Pmax <= 0)
-)
+print(anios_excluidos)
 
 
-
-
-# 9. ESTADISTICOS DESCRIPTIVOS ====
+# 10. ESTADISTICOS DESCRIPTIVOS ====
 
 n <- length(prec)
 media <- mean(prec)
@@ -376,8 +390,7 @@ estadisticos <- data.frame(
 )
 
 
-
-# 10. LLUVIAS DE DISEÑO ====
+# 11. LLUVIAS DE DISEÑO ====
 
 resultado <- data.frame(
   T = T_ret,
@@ -387,10 +400,11 @@ resultado <- data.frame(
 
 resultado$SQRT_ETmax <- sapply(T_ret, sqrt_etmax_quantile, media = media, sdv = sdv)
 resultado$Gumbel <- sapply(T_ret, qgumbel_T, media = media, sdv = sdv)
+
 prec_lp3 <- prec[prec > 0]
 
 if (length(prec_lp3) < 10) {
-  warning("Log-Pearson III se calculará con menos de 10 máximos anuales positivos.")
+  warning("Log-Pearson III se calculara con menos de 10 maximos anuales positivos.")
 }
 
 resultado$LogPearsonIII <- sapply(T_ret, qlp3_T, x = prec_lp3)
@@ -402,9 +416,7 @@ resultado$Dif_LP3_vs_Gumbel_pct <- 100 *
   (resultado$LogPearsonIII - resultado$Gumbel) / resultado$Gumbel
 
 
-
-
-# 11. GRAFICOS ====
+# 12. GRAFICOS BASE ====
 
 obs_plot <- weibull_return_period(prec)
 obs_plot$Metodo <- "Observado"
@@ -470,8 +482,7 @@ print(g1)
 print(g2)
 
 
-
-# 12. INTERVALOS DE CONFIANZA POR BOOTSTRAP ====
+# 13. INTERVALOS DE CONFIANZA POR BOOTSTRAP ====
 
 bootstrap_ic <- function(x, T_ret, nboot = 1000) {
   
@@ -481,7 +492,7 @@ bootstrap_ic <- function(x, T_ret, nboot = 1000) {
   res_lp3 <- matrix(NA, nrow = nboot, ncol = length(T_ret))
   res_sqrt <- matrix(NA, nrow = nboot, ncol = length(T_ret))
   
-  for (i in 1:nboot) {
+  for (i in seq_len(nboot)) {
     
     xb <- sample(x, size = n, replace = TRUE)
     
@@ -527,90 +538,99 @@ bootstrap_ic <- function(x, T_ret, nboot = 1000) {
   )
 }
 
-set.seed(1234)
+if (calcular_IC_bootstrap) {
+  
+  set.seed(semilla_bootstrap)
+  
+  cat("\nCalculando intervalos de confianza por bootstrap...\n")
+  
+  ci <- bootstrap_ic(prec, T_ret, nboot = nboot)
+  
+  resultado$Gumbel_low <- ci$gumbel[1, ]
+  resultado$Gumbel_high <- ci$gumbel[2, ]
+  
+  resultado$LP3_low <- ci$lp3[1, ]
+  resultado$LP3_high <- ci$lp3[2, ]
+  
+  resultado$SQRT_low <- ci$sqrt[1, ]
+  resultado$SQRT_high <- ci$sqrt[2, ]
+  
+  g3 <- ggplot() +
+    geom_ribbon(
+      data = resultado,
+      aes(x = T, ymin = Gumbel_low, ymax = Gumbel_high),
+      fill = "blue",
+      alpha = 0.2
+    ) +
+    geom_ribbon(
+      data = resultado,
+      aes(x = T, ymin = LP3_low, ymax = LP3_high),
+      fill = "green",
+      alpha = 0.2
+    ) +
+    geom_ribbon(
+      data = resultado,
+      aes(x = T, ymin = SQRT_low, ymax = SQRT_high),
+      fill = "red",
+      alpha = 0.2
+    ) +
+    geom_line(
+      data = curvas_plot,
+      aes(x = T, y = P, color = Metodo),
+      linewidth = 1
+    ) +
+    geom_point(
+      data = obs_plot,
+      aes(x = T, y = P),
+      color = "black",
+      size = 2
+    ) +
+    scale_x_log10(
+      breaks = c(2, 5, 10, 20, 50, 100, 200, 500)
+    ) +
+    labs(
+      title = "Curvas de retorno con intervalos de confianza",
+      x = "Periodo de retorno, T (años)",
+      y = "Precipitación diaria de diseño, Pd (mm)"
+    ) +
+    theme_gray()
+  
+  print(g3)
+  
+} else {
+  g3 <- NULL
+}
 
-cat("\nCalculando intervalos de confianza por bootstrap...\n")
 
-ci <- bootstrap_ic(prec, T_ret, nboot = 1000)
-
-resultado$Gumbel_low <- ci$gumbel[1, ]
-resultado$Gumbel_high <- ci$gumbel[2, ]
-
-resultado$LP3_low <- ci$lp3[1, ]
-resultado$LP3_high <- ci$lp3[2, ]
-
-resultado$SQRT_low <- ci$sqrt[1, ]
-resultado$SQRT_high <- ci$sqrt[2, ]
-
-g3 <- ggplot() +
-  geom_ribbon(
-    data = resultado,
-    aes(x = T, ymin = Gumbel_low, ymax = Gumbel_high),
-    fill = "blue",
-    alpha = 0.2
-  ) +
-  geom_ribbon(
-    data = resultado,
-    aes(x = T, ymin = LP3_low, ymax = LP3_high),
-    fill = "green",
-    alpha = 0.2
-  ) +
-  geom_ribbon(
-    data = resultado,
-    aes(x = T, ymin = SQRT_low, ymax = SQRT_high),
-    fill = "red",
-    alpha = 0.2
-  ) +
-  geom_line(
-    data = curvas_plot,
-    aes(x = T, y = P, color = Metodo),
-    linewidth = 1
-  ) +
-  geom_point(
-    data = obs_plot,
-    aes(x = T, y = P),
-    color = "black",
-    size = 2
-  ) +
-  scale_x_log10(
-    breaks = c(2, 5, 10, 20, 50, 100, 200, 500)
-  ) +
-  labs(
-    title = "Curvas de retorno con intervalos de confianza",
-    x = "Periodo de retorno, T (años)",
-    y = "Precipitación diaria de diseño, Pd (mm)"
-  ) +
-  theme_gray()
-
-print(g3)
-
-
-
-
-# 13. EXPORTACION ====
+# 14. EXPORTACION ====
 
 write_csv(estadisticos, salida_estadisticos)
 write_csv(resultado, salida_lluvias)
 
 ggsave(salida_curvas, plot = g1, width = 8, height = 5, dpi = 300)
 ggsave(salida_diferencias, plot = g2, width = 8, height = 5, dpi = 300)
-ggsave(salida_curvas_ic, plot = g3, width = 8, height = 5, dpi = 300)
+
+if (!is.null(g3)) {
+  ggsave(salida_curvas_ic, plot = g3, width = 8, height = 5, dpi = 300)
+}
 
 
-
-# 14. RESUMEN EN CONSOLA ====
+# 15. RESUMEN EN CONSOLA ====
 
 cat("\n============================================\n")
-cat("SCRIPT 006a FINALIZADO\n")
+cat("SCRIPT 003 FINALIZADO\n")
 cat("============================================\n")
+
+cat("\nArchivo de entrada:\n")
+cat(archivo_csv, "\n")
 
 cat("\nSerie diaria limpia:\n")
 cat(salida_diaria, "\n")
 
-cat("\nMáximos anuales:\n")
+cat("\nMaximos anuales:\n")
 cat(salida_maximos, "\n")
 
-cat("\nEstadísticos:\n")
+cat("\nEstadisticos:\n")
 cat(salida_estadisticos, "\n")
 
 cat("\nLluvias de diseño Pd(T):\n")
@@ -619,7 +639,7 @@ cat(salida_lluvias, "\n")
 cat("\nFiguras:\n")
 cat(salida_curvas, "\n")
 cat(salida_diferencias, "\n")
-cat(salida_curvas_ic, "\n")
+if (!is.null(g3)) cat(salida_curvas_ic, "\n")
 
 cat("\nResumen de lluvias de diseño:\n")
 print(round(resultado, 3))

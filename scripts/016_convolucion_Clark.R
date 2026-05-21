@@ -15,7 +15,7 @@
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -25,16 +25,13 @@ library(readr)
 library(ggplot2)
 library(tidyr)
 library(stringr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -45,6 +42,7 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
 archivo_lluvia_efectiva_010 <- "salidas/tablas/010_lluvia_efectiva_SCS_CN_largo.csv"
 archivo_resumen_010 <- "salidas/tablas/010_lluvia_efectiva_SCS_CN_resumen.csv"
+
 archivo_HU_Clark_015 <- "salidas/tablas/015_HU_Clark_largo.csv"
 archivo_HU_Clark_base_015 <- "salidas/tablas/015_HU_Clark_base.csv"
 archivo_HU_Clark_resumen_015 <- "salidas/tablas/015_HU_Clark_resumen.csv"
@@ -52,6 +50,7 @@ archivo_HU_Clark_resumen_015 <- "salidas/tablas/015_HU_Clark_resumen.csv"
 salida_hidrograma_Clark <- "salidas/tablas/016_hidrograma_Clark_largo.csv"
 salida_resumen_Clark <- "salidas/tablas/016_hidrograma_Clark_resumen.csv"
 salida_componentes_Clark <- "salidas/tablas/016_componentes_convolucion_Clark.csv"
+
 salida_figura_hidrogramas <- "salidas/figuras/016_hidrogramas_Clark.png"
 salida_figura_hietograma_hidrograma <- "salidas/figuras/016_hietograma_efectivo_hidrograma_Clark.png"
 
@@ -65,11 +64,15 @@ T_seleccionados <- NULL
 # T_seleccionados <- c(10, 25, 100, 500)
 
 # Orden visual de los periodos de retorno en los facet_wrap.
-# Se organiza por columnas de magnitud creciente:
-# T=2,5,10 | T=25,50,100 | T=200,500
-orden_T_plot <- c(2, 25, 200,
-                  5, 50, 500,
-                  10, 100)
+# Con ncol = 3 produce:
+# T=2, T=25, T=200
+# T=5, T=50, T=500
+# T=10,T=100
+orden_T_plot <- c(
+  2, 25, 200,
+  5, 50, 500,
+  10, 100
+)
 
 # Caudal base añadido al hidrograma directo.
 # Para avenidas de diseño suele dejarse en 0.
@@ -87,13 +90,16 @@ digitos_tiempo <- 8
 
 primer_archivo_existente <- function(rutas, obligatorio = FALSE, etiqueta = "archivo") {
   existe <- rutas[file.exists(rutas)]
+
   if (length(existe) > 0) return(existe[1])
+
   if (obligatorio) {
     stop(
       "No se encontro ", etiqueta, ". Candidatos:\n",
       paste(rutas, collapse = "\n")
     )
   }
+
   NA_character_
 }
 
@@ -105,17 +111,21 @@ integrar_trapecios <- function(x, y) {
 obtener_paso_unico <- function(x, nombre = "paso") {
   xu <- unique(round(x, digitos_tiempo))
   xu <- xu[is.finite(xu)]
+
   if (length(xu) != 1) {
     stop(nombre, " no es unico. Valores encontrados: ", paste(xu, collapse = ", "))
   }
+
   as.numeric(xu[1])
 }
 
 valor_numerico_primero <- function(tabla, candidatas, defecto = NA_real_) {
   cols <- candidatas[candidatas %in% names(tabla)]
   if (length(cols) == 0) return(defecto)
+
   val <- suppressWarnings(as.numeric(tabla[[cols[1]]][1]))
   if (!is.finite(val)) return(defecto)
+
   val
 }
 
@@ -123,7 +133,6 @@ crear_T_label <- function(T_anios, orden_T = orden_T_plot) {
   niveles_preferidos <- paste0("T = ", orden_T, " años")
   etiquetas <- paste0("T = ", T_anios, " años")
 
-  # Si aparecen periodos no contemplados en orden_T_plot, se añaden al final en orden numérico.
   T_extra <- sort(setdiff(unique(T_anios), orden_T))
   niveles_extra <- paste0("T = ", T_extra, " años")
 
@@ -132,6 +141,7 @@ crear_T_label <- function(T_anios, orden_T = orden_T_plot) {
 
 preparar_HU_en_malla <- function(hu_T, dt_h, tmax_HU_h) {
   tiempos_HU <- seq(0, tmax_HU_h, by = dt_h)
+
   if (tail(tiempos_HU, 1) < tmax_HU_h - tolerancia_tiempo_h) {
     tiempos_HU <- c(tiempos_HU, tmax_HU_h)
   }
@@ -145,7 +155,7 @@ preparar_HU_en_malla <- function(hu_T, dt_h, tmax_HU_h) {
     yright = 0
   )$y
 
-  tibble::tibble(
+  tibble(
     tiempo_HU_h = tiempos_HU,
     q_unitario_m3_s_por_mm = q_HU
   )
@@ -228,7 +238,7 @@ HU_Clark <- HU_Clark %>%
     q_unitario_m3_s_por_mm = as.numeric(q_unitario_m3_s_por_mm)
   )
 
-# Si el archivo 015_HU_Clark_largo.csv trae T_anios, se usa.
+# Si 015_HU_Clark_largo.csv trae T_anios, se usa.
 # Si no, el HU base se replica para todos los T del 010.
 if ("T_anios" %in% names(HU_Clark)) {
   HU_Clark <- HU_Clark %>% mutate(T_anios = as.numeric(T_anios))
@@ -253,9 +263,11 @@ if (!is.finite(Q_base_m3_s) || Q_base_m3_s < 0) {
 if (!is.null(T_seleccionados)) {
   lluvia_efectiva <- lluvia_efectiva %>% filter(T_anios %in% T_seleccionados)
   resumen_010 <- resumen_010 %>% filter(T_anios %in% T_seleccionados)
+
   if (any(is.finite(HU_Clark$T_anios))) {
     HU_Clark <- HU_Clark %>% filter(T_anios %in% T_seleccionados | is.na(T_anios))
   }
+
   if (nrow(lluvia_efectiva) == 0) {
     stop("Ninguno de los T_seleccionados existe en el archivo 010.")
   }
@@ -269,11 +281,16 @@ if (length(T_HU_validos) == 0) {
   T_comunes <- T_lluvia
 } else {
   T_comunes <- intersect(T_lluvia, T_HU_validos)
+
   if (length(T_comunes) == 0) {
     stop("No hay periodos de retorno comunes entre 010 y 015.")
   }
+
   if (length(setdiff(T_lluvia, T_HU_validos)) > 0) {
-    warning("Hay T_anios presentes en 010 pero no en 015: ", paste(setdiff(T_lluvia, T_HU_validos), collapse = ", "))
+    warning(
+      "Hay T_anios presentes en 010 pero no en 015: ",
+      paste(setdiff(T_lluvia, T_HU_validos), collapse = ", ")
+    )
   }
 }
 
@@ -289,6 +306,7 @@ A_km2_global <- valor_numerico_primero(
 if (!is.finite(A_km2_global) && "A_km2" %in% names(HU_Clark)) {
   A_km2_vals <- suppressWarnings(as.numeric(HU_Clark$A_km2))
   A_km2_vals <- A_km2_vals[is.finite(A_km2_vals)]
+
   if (length(A_km2_vals) > 0) A_km2_global <- A_km2_vals[1]
 }
 
@@ -342,7 +360,7 @@ convolucion_Clark_T <- function(T_i) {
     Q_directo[indices] <- Q_directo[indices] + contribucion_j
 
     if (exportar_componentes) {
-      lista_componentes[[j]] <- tibble::tibble(
+      lista_componentes[[j]] <- tibble(
         T_anios = T_i,
         metodo = "Clark",
         bloque_lluvia = bloque_j,
@@ -357,7 +375,7 @@ convolucion_Clark_T <- function(T_i) {
 
   Q_total <- Q_directo + Q_base_m3_s
 
-  hidrograma <- tibble::tibble(
+  hidrograma <- tibble(
     T_anios = T_i,
     metodo = "Clark",
     tiempo_h = round(tiempos_h, digitos_tiempo),
@@ -368,7 +386,7 @@ convolucion_Clark_T <- function(T_i) {
     dt_min = dt_min
   )
 
-  lluvia_malla <- tibble::tibble(
+  lluvia_malla <- tibble(
     T_anios = T_i,
     tiempo_h = round(lluvia_T$tiempo_inicio_h, digitos_tiempo),
     bloque = lluvia_T$bloque,
@@ -388,7 +406,13 @@ convolucion_Clark_T <- function(T_i) {
 
   Pe_total_mm <- sum(lluvia_T$Pe_incremental_mm, na.rm = TRUE)
   P_total_mm <- sum(lluvia_T$P_incremental_mm, na.rm = TRUE)
-  volumen_objetivo_m3 <- if (is.finite(A_km2_global)) Pe_total_mm * 1000 * A_km2_global else NA_real_
+
+  volumen_objetivo_m3 <- if (is.finite(A_km2_global)) {
+    Pe_total_mm * 1000 * A_km2_global
+  } else {
+    NA_real_
+  }
+
   volumen_directo_m3 <- integrar_trapecios(hidrograma$tiempo_h, hidrograma$Q_directo_m3_s) * 3600
   volumen_total_m3 <- integrar_trapecios(hidrograma$tiempo_h, hidrograma$Q_total_m3_s) * 3600
 
@@ -396,7 +420,7 @@ convolucion_Clark_T <- function(T_i) {
   Qp_total <- max(hidrograma$Q_total_m3_s, na.rm = TRUE)
   tiempo_pico_h <- hidrograma$tiempo_h[which.max(hidrograma$Q_total_m3_s)][1]
 
-  resumen <- tibble::tibble(
+  resumen <- tibble(
     T_anios = T_i,
     metodo = "Clark",
     A_km2 = A_km2_global,
@@ -423,7 +447,7 @@ convolucion_Clark_T <- function(T_i) {
     )
   )
 
-  componentes <- if (exportar_componentes) bind_rows(lista_componentes) else tibble::tibble()
+  componentes <- if (exportar_componentes) bind_rows(lista_componentes) else tibble()
 
   list(
     hidrograma = hidrograma,
@@ -454,11 +478,8 @@ if (exportar_componentes) {
 
 # 9. FIGURAS ====
 
-# Orden común y estable de paneles. Al ser un factor, facet_wrap respeta este orden.
 hidrograma_plot <- hidrograma_Clark %>%
-  mutate(
-    T_label = crear_T_label(T_anios)
-  )
+  mutate(T_label = crear_T_label(T_anios))
 
 g_hid <- ggplot(hidrograma_plot, aes(x = tiempo_h, y = Q_total_m3_s)) +
   geom_line(linewidth = 0.8) +
@@ -486,7 +507,11 @@ combo_plot <- hidrograma_Clark %>%
   mutate(
     Qmax = max(Q_total_m3_s, na.rm = TRUE),
     Imax = max(intensidad_efectiva_mm_h, na.rm = TRUE),
-    intensidad_efectiva_escalada = ifelse(Imax > 0, intensidad_efectiva_mm_h / Imax * Qmax, 0),
+    intensidad_efectiva_escalada = ifelse(
+      Imax > 0,
+      intensidad_efectiva_mm_h / Imax * Qmax,
+      0
+    ),
     T_label = crear_T_label(T_anios)
   ) %>%
   ungroup()

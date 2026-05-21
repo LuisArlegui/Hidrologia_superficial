@@ -3,17 +3,24 @@
 # 007_metodo_racional_Q.R
 #
 # Objetivo:
-# - Leer área de cuenca del script 005
-# - Leer P0 ponderado del archivo estadisticos_P0.csv
+# - Leer área de cuenca y P0 ponderado del script 005
 # - Leer intensidades I(T,tc) del script 006
 # - Calcular beta, P0 corregido, C y Q_T
 # - Aplicar el método racional según Norma 5.2-IC
 #
+# Nota:
+# - Para la versión normativa del método racional debe usarse
+#   el archivo 006_lluvia_IDF_tiempo_concentracion.csv
+#   generado con el tiempo de concentración de la Norma 5.2-IC.
+# - La versión Kirpich del 006 se reserva para comparación de
+#   sensibilidad, no para el cálculo normativo principal.
+#
 ############################################################
+
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2")
+paquetes <- c("dplyr", "readr", "ggplot2", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -21,12 +28,13 @@ if (length(instalar) > 0) install.packages(instalar)
 library(dplyr)
 library(readr)
 library(ggplot2)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -35,9 +43,11 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
 # 2. RUTAS ====
 
-archivo_param_005 <- "salidas/tablas/parametros_hidrologicos_resumen.csv"
-archivo_estat_P0  <- "salidas/tablas/estadisticos_P0.csv"
-archivo_idf_006   <- "salidas/tablas/006_lluvia_IDF_tiempo_concentracion.csv"
+archivo_param_005 <- "salidas/tablas/005_parametros_hidrologicos_resumen.csv"
+archivo_estat_P0  <- "salidas/tablas/005_estadisticos_P0.csv"
+
+# Archivo normativo principal procedente del script 006 versión 5.2-IC.
+archivo_idf_006 <- "salidas/tablas/006_lluvia_IDF_tiempo_concentracion.csv"
 
 salida_q <- "salidas/tablas/007_caudales_metodo_racional.csv"
 
@@ -47,20 +57,21 @@ salida_fig_c <- "salidas/figuras/007_C_vs_T.png"
 
 # 3. PARAMETROS EDITABLES ====
 
-# Región de la tabla 2.5 de la Norma 5.2-IC
+# Región de la tabla 2.5 de la Norma 5.2-IC.
 region_norma <- "93"
 
 # Para la formulación:
-# beta = (beta_m - Delta_50) * F_T
+# beta = (beta_m - Delta) * F_T
+# Opciones disponibles en tabla_beta: "Delta50", "Delta67", "Delta90".
 usar_delta <- "Delta50"
 
 
 # 4. TABLA 2.5 NORMA 5.2-IC ====
 
 # Primera versión: región 93.
-# Se puede ampliar después con más regiones si interesa.
+# Se puede ampliar después con más regiones.
 
-tabla_beta <- tibble::tibble(
+tabla_beta <- tibble(
   region = c("93"),
   beta_m = c(1.70),
   Delta50 = c(0.20),
@@ -85,7 +96,10 @@ if (!file.exists(archivo_estat_P0)) {
 }
 
 if (!file.exists(archivo_idf_006)) {
-  stop("No se encuentra el archivo del script 006: ", archivo_idf_006)
+  stop(
+    "No se encuentra el archivo del script 006 normativo: ", archivo_idf_006,
+    "\nEjecuta antes 006_lluvia_IDF_tiempo_concentracion_52IC.R."
+  )
 }
 
 param_005 <- read_csv(archivo_param_005, show_col_types = FALSE)
@@ -100,18 +114,20 @@ faltan_005 <- setdiff(campos_005, names(param_005))
 
 if (length(faltan_005) > 0) {
   stop(
-    "Faltan campos en parametros_hidrologicos_resumen.csv: ",
+    "Faltan campos en 005_parametros_hidrologicos_resumen.csv: ",
     paste(faltan_005, collapse = ", ")
   )
 }
 
-campos_P0 <- c("PO_ponderado_mm")
+# En la versión v2 del script 005 el campo se llama P0_ponderado_mm.
+campos_P0 <- c("P0_ponderado_mm")
 faltan_P0 <- setdiff(campos_P0, names(estat_P0))
 
 if (length(faltan_P0) > 0) {
   stop(
-    "Faltan campos en estadisticos_P0.csv: ",
-    paste(faltan_P0, collapse = ", ")
+    "Faltan campos en 005_estadisticos_P0.csv: ",
+    paste(faltan_P0, collapse = ", "),
+    "\nCampos disponibles: ", paste(names(estat_P0), collapse = ", ")
   )
 }
 
@@ -121,8 +137,22 @@ faltan_006 <- setdiff(campos_006, names(idf_006))
 if (length(faltan_006) > 0) {
   stop(
     "Faltan campos en 006_lluvia_IDF_tiempo_concentracion.csv: ",
-    paste(faltan_006, collapse = ", ")
+    paste(faltan_006, collapse = ", "),
+    "\nCampos disponibles: ", paste(names(idf_006), collapse = ", ")
   )
+}
+
+if ("metodo_tc" %in% names(idf_006)) {
+  metodo_tc_006 <- unique(idf_006$metodo_tc)
+  metodo_tc_006 <- metodo_tc_006[!is.na(metodo_tc_006)]
+
+  if (length(metodo_tc_006) > 0 && !any(metodo_tc_006 == "principal_52IC")) {
+    warning(
+      "El archivo 006 no parece corresponder al tc de la Norma 5.2-IC. ",
+      "metodo_tc encontrado: ", paste(metodo_tc_006, collapse = ", "),
+      "\nPara el cálculo normativo principal se recomienda usar principal_52IC."
+    )
+  }
 }
 
 if (!(region_norma %in% tabla_beta$region)) {
@@ -139,8 +169,8 @@ if (!(usar_delta %in% names(tabla_beta))) {
 
 # 7. EXTRAER PARAMETROS ====
 
-A_km2 <- param_005$area_cuenca_km2[1]
-P0i_mm <- estat_P0$PO_ponderado_mm[1]
+A_km2 <- as.numeric(param_005$area_cuenca_km2[1])
+P0i_mm <- as.numeric(estat_P0$P0_ponderado_mm[1])
 
 if (!is.finite(A_km2) || A_km2 <= 0) {
   stop("Área de cuenca no válida.")
@@ -157,13 +187,13 @@ beta_reg <- tabla_beta %>%
 # 8. FUNCIONES AUXILIARES ====
 
 obtener_FT <- function(T, beta_reg) {
-  
+
   if (T %in% c(2, 5, 25, 100, 500)) {
     campo <- paste0("FT_", T)
     return(as.numeric(beta_reg[[campo]]))
   }
-  
-  # Interpolación lineal en log10(T) para periodos intermedios
+
+  # Interpolación lineal en log10(T) para periodos intermedios.
   T_base <- c(2, 5, 25, 100, 500)
   FT_base <- c(
     beta_reg$FT_2,
@@ -172,33 +202,33 @@ obtener_FT <- function(T, beta_reg) {
     beta_reg$FT_100,
     beta_reg$FT_500
   )
-  
+
   if (T < min(T_base) || T > max(T_base)) {
     warning("T = ", T, " fuera del rango de la tabla 2.5. Se extrapola.")
   }
-  
+
   FT <- approx(
     x = log10(T_base),
     y = FT_base,
     xout = log10(T),
     rule = 2
   )$y
-  
-  return(as.numeric(FT))
+
+  as.numeric(FT)
 }
 
 
 calcular_C_52IC <- function(Pd_mm, KA, P0_mm) {
-  
+
   x <- (Pd_mm * KA) / P0_mm
-  
+
   C <- ifelse(
     x > 1,
     ((x - 1) * (x + 23)) / ((x + 11)^2),
     0
   )
-  
-  return(C)
+
+  C
 }
 
 
@@ -217,9 +247,9 @@ resultado_q <- idf_006 %>%
     P0i_mm = P0i_mm,
     P0_mm = P0i_mm * beta,
     C = calcular_C_52IC(Pd_mm, KA, P0_mm),
-    
-    # Método racional 5.2-IC
-    # I en mm/h, A en km2, Q en m3/s
+
+    # Método racional 5.2-IC:
+    # I en mm/h, A en km2, Q en m3/s.
     Q_m3_s = (I_mm_h * C * A_km2 * Kt) / 3.6
   ) %>%
   ungroup()
@@ -238,7 +268,7 @@ g_q <- ggplot(resultado_q, aes(x = T_anios, y = Q_m3_s)) +
   scale_x_log10(breaks = resultado_q$T_anios) +
   labs(
     title = "Caudal punta por el método racional",
-    subtitle = paste0("Región 5.2-IC: ", region_norma),
+    subtitle = paste0("Norma 5.2-IC | Región: ", region_norma),
     x = "Periodo de retorno, T (años)",
     y = expression(Q[T]~"(m"^3*"/s)")
   ) +
@@ -250,7 +280,7 @@ g_c <- ggplot(resultado_q, aes(x = T_anios, y = C)) +
   scale_x_log10(breaks = resultado_q$T_anios) +
   labs(
     title = "Coeficiente de escorrentía C",
-    subtitle = paste0("Región 5.2-IC: ", region_norma),
+    subtitle = paste0("Norma 5.2-IC | Región: ", region_norma),
     x = "Periodo de retorno, T (años)",
     y = "C"
   ) +
@@ -268,6 +298,14 @@ print(g_c)
 cat("\n====================================================\n")
 cat("SCRIPT 007 FINALIZADO\n")
 cat("====================================================\n")
+
+cat("\nArchivo IDF usado:\n")
+cat(archivo_idf_006, "\n")
+
+if ("metodo_tc" %in% names(idf_006)) {
+  cat("\nMetodo tc leído del 006:\n")
+  cat(paste(unique(idf_006$metodo_tc), collapse = ", "), "\n")
+}
 
 cat("\nParámetros generales:\n")
 cat("Región norma =", region_norma, "\n")

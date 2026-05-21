@@ -14,7 +14,7 @@
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -23,16 +23,13 @@ library(dplyr)
 library(readr)
 library(ggplot2)
 library(tidyr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -43,7 +40,7 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
 archivo_lluvia_efectiva_010 <- "salidas/tablas/010_lluvia_efectiva_SCS_CN_largo.csv"
 archivo_resumen_010 <- "salidas/tablas/010_lluvia_efectiva_SCS_CN_resumen.csv"
-archivo_parametros_005 <- "salidas/tablas/parametros_hidrologicos_resumen.csv"
+archivo_parametros_005 <- "salidas/tablas/005_parametros_hidrologicos_resumen.csv"
 
 salida_HU_largo <- "salidas/tablas/011_HU_SCS_largo.csv"
 salida_HU_resumen <- "salidas/tablas/011_HU_SCS_resumen.csv"
@@ -94,7 +91,10 @@ coef_Qp_SCS <- 0.208
 # 4. COMPROBAR ARCHIVOS DE ENTRADA ====
 
 if (!file.exists(archivo_lluvia_efectiva_010)) {
-  stop("No se encuentra la tabla larga del script 010: ", archivo_lluvia_efectiva_010)
+  stop(
+    "No se encuentra la tabla larga del script 010: ", archivo_lluvia_efectiva_010,
+    "\nEjecuta antes 010_lluvia_efectiva_SCS_CN.R."
+  )
 }
 
 if (!file.exists(archivo_resumen_010)) {
@@ -150,7 +150,7 @@ if (!is.null(T_seleccionados)) {
     filter(T_anios %in% T_seleccionados)
   resumen_010 <- resumen_010 %>%
     filter(T_anios %in% T_seleccionados)
-  
+
   if (nrow(lluvia_efectiva) == 0) {
     stop("Ninguno de los T_seleccionados existe en la tabla del script 010.")
   }
@@ -161,7 +161,7 @@ if (!is.null(T_seleccionados)) {
 
 # Ordenadas adimensionales habituales del hidrograma unitario SCS.
 # x = t/Tp; y = q/Qp.
-HU_adimensional <- tibble::tibble(
+HU_adimensional <- tibble(
   t_Tp = c(
     0.0, 0.1, 0.2, 0.3, 0.4,
     0.5, 0.6, 0.7, 0.8, 0.9,
@@ -189,7 +189,7 @@ obtener_D_efectiva_h <- function(dt_h_010) {
   if (is.character(D_efectiva_h) && D_efectiva_h == "dt_010") {
     return(dt_h_010)
   }
-  
+
   D <- suppressWarnings(as.numeric(D_efectiva_h))
   if (!is.finite(D) || D <= 0) {
     stop("D_efectiva_h debe ser 'dt_010' o un numero positivo en horas.")
@@ -201,7 +201,7 @@ obtener_paso_salida_h <- function(dt_h_010) {
   if (is.character(paso_salida_min) && paso_salida_min == "dt_010") {
     return(dt_h_010)
   }
-  
+
   paso_min <- suppressWarnings(as.numeric(paso_salida_min))
   if (!is.finite(paso_min) || paso_min <= 0) {
     stop("paso_salida_min debe ser 'dt_010' o un numero positivo en minutos.")
@@ -218,24 +218,24 @@ construir_HU_T <- function(T_anios_i, tc_h_i, dt_h_010_i) {
   if (!is.finite(factor_Tlag_Tc) || factor_Tlag_Tc <= 0) {
     stop("factor_Tlag_Tc debe ser positivo.")
   }
-  
+
   D_h <- obtener_D_efectiva_h(dt_h_010_i)
   paso_h <- obtener_paso_salida_h(dt_h_010_i)
-  
+
   Tlag_h <- factor_Tlag_Tc * tc_h_i
   Tp_h <- D_h / 2 + Tlag_h
   Qp_unitario_teorico <- coef_Qp_SCS * A_km2 / Tp_h
-  
+
   if (!is.finite(Tp_h) || Tp_h <= 0) stop("Tp_h no es valido.")
   if (!is.finite(Qp_unitario_teorico) || Qp_unitario_teorico <= 0) stop("Qp unitario no es valido.")
-  
+
   tmax_h <- max(factor_tmax_Tp * Tp_h, max(HU_adimensional$t_Tp) * Tp_h)
   tiempos_h <- seq(0, tmax_h, by = paso_h)
-  
+
   if (tail(tiempos_h, 1) < tmax_h) {
     tiempos_h <- c(tiempos_h, tmax_h)
   }
-  
+
   t_Tp <- tiempos_h / Tp_h
   q_Qp <- approx(
     x = HU_adimensional$t_Tp,
@@ -245,13 +245,13 @@ construir_HU_T <- function(T_anios_i, tc_h_i, dt_h_010_i) {
     yleft = 0,
     yright = 0
   )$y
-  
+
   q_unitario <- Qp_unitario_teorico * q_Qp
-  
+
   volumen_objetivo_m3_por_mm <- 1000 * A_km2
   volumen_calculado_m3_por_mm <- integrar_trapecios(tiempos_h, q_unitario) * 3600
   factor_correccion_volumen <- 1
-  
+
   if (corregir_volumen_unitario) {
     if (!is.finite(volumen_calculado_m3_por_mm) || volumen_calculado_m3_por_mm <= 0) {
       stop("No se puede corregir el volumen del HU: volumen calculado no valido.")
@@ -259,12 +259,12 @@ construir_HU_T <- function(T_anios_i, tc_h_i, dt_h_010_i) {
     factor_correccion_volumen <- volumen_objetivo_m3_por_mm / volumen_calculado_m3_por_mm
     q_unitario <- q_unitario * factor_correccion_volumen
   }
-  
+
   volumen_final_m3_por_mm <- integrar_trapecios(tiempos_h, q_unitario) * 3600
   Qp_unitario_final <- max(q_unitario, na.rm = TRUE)
   tiempo_pico_h <- tiempos_h[which.max(q_unitario)][1]
-  
-  hu <- tibble::tibble(
+
+  hu <- tibble(
     T_anios = T_anios_i,
     tiempo_h = tiempos_h,
     t_Tp = t_Tp,
@@ -281,8 +281,8 @@ construir_HU_T <- function(T_anios_i, tc_h_i, dt_h_010_i) {
     volumen_objetivo_m3_por_mm = volumen_objetivo_m3_por_mm,
     volumen_final_m3_por_mm = volumen_final_m3_por_mm
   )
-  
-  resumen <- tibble::tibble(
+
+  resumen <- tibble(
     T_anios = T_anios_i,
     A_km2 = A_km2,
     tc_h = tc_h_i,
@@ -304,7 +304,7 @@ construir_HU_T <- function(T_anios_i, tc_h_i, dt_h_010_i) {
     coef_Qp_SCS = coef_Qp_SCS,
     corregir_volumen_unitario = corregir_volumen_unitario
   )
-  
+
   list(hu = hu, resumen = resumen)
 }
 
@@ -341,12 +341,19 @@ write_csv(HU_resumen, salida_HU_resumen)
 
 # 10. FIGURAS ====
 
+orden_T <- sort(unique(HU_largo$T_anios))
+
 HU_plot <- HU_largo %>%
-  mutate(T_label = paste0("T = ", T_anios, " años"))
+  mutate(
+    T_label = factor(
+      paste0("T = ", T_anios, " años"),
+      levels = paste0("T = ", orden_T, " años")
+    )
+  )
 
 g_HU <- ggplot(HU_plot, aes(x = tiempo_h, y = q_unitario_m3_s_por_mm)) +
   geom_line(linewidth = 0.8) +
-  facet_wrap(~ T_label, scales = "free_y") +
+  facet_wrap(~ T_label, ncol = 3, scales = "free_y") +
   labs(
     title = "Hidrograma unitario SCS",
     subtitle = paste0(

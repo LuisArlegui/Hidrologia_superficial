@@ -5,8 +5,8 @@
 # Objetivo:
 # - Construir una aproximacion geomorfologica de la curva
 #   tiempo-area necesaria para el hidrograma unitario de Clark.
-# - Usar el DTM hidrologicamente corregido y, si esta disponible,
-#   la cuenca delimitada.
+# - Usar el DTM hidrologicamente corregido y la cuenca delimitada
+#   almacenada en el GeoPackage unico del proyecto.
 # - Calcular direcciones D8, tiempos de viaje acumulados hacia el
 #   exutorio y una curva tiempo-area A(t).
 # - Exportar raster de tiempo de viaje, tabla tiempo-area, resumen
@@ -22,7 +22,7 @@
 
 # 0. PAQUETES ====
 
-paquetes <- c("terra", "sf", "dplyr", "readr", "ggplot2", "tidyr")
+paquetes <- c("terra", "sf", "dplyr", "readr", "ggplot2", "tidyr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -33,16 +33,15 @@ library(dplyr)
 library(readr)
 library(ggplot2)
 library(tidyr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
+} else {
+  stop("No se encuentra scripts/000_rutas_y_capas.R")
 }
 
 dir.create("datos/procesados", recursive = TRUE, showWarnings = FALSE)
@@ -51,32 +50,17 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 dir.create("salidas/mapas", recursive = TRUE, showWarnings = FALSE)
 
 
-# 2. RUTAS ====
+# 2. RUTAS Y CAPAS ====
 
-# DTM hidrologicamente corregido. Se proponen varios nombres posibles
-# usados en el flujo anterior. El script empleara el primero que exista.
-archivos_dtm_candidatos <- c(
-  "datos/procesados/DTM_Burnt_Filled_Clipped.tif"
-)
+# DTM hidrologicamente corregido.
+archivo_dtm <- "salidas/mapas/DTM_Burnt_Filled_Clipped.tif"
 
-# Cuenca. Si no existe, el script usa directamente las celdas no-NA del DTM.
-archivos_cuenca_candidatos <- c(
-  "salidas/mapas/cuenca.gpkg",
-  "salidas/mapas/cuenca.shp",
-  "datos/procesados/cuenca.gpkg",
-  "datos/procesados/cuenca.shp"
-)
-
-# Punto de salida/exutorio opcional. Si no existe, se estima como la celda
-# valida de menor cota situada en el borde de la cuenca/raster.
-archivos_exutorio_candidatos <- c(
-  "salidas/mapas/exutorio.gpkg",
-  "salidas/mapas/exutorio.shp",
-  "datos/procesados/exutorio.gpkg",
-  "datos/procesados/exutorio.shp"
-)
+# Capas vectoriales en el GeoPackage unico.
+capa_cuenca <- capas_gpkg$cuenca
+capa_exutorio <- capas_gpkg$exutorio
 
 # Tabla del script 006 para leer Tc.
+# Se usa la version normativa 5.2-IC, coherente con el metodo racional.
 archivo_006 <- "salidas/tablas/006_lluvia_IDF_tiempo_concentracion.csv"
 
 salida_tiempo_raster <- "salidas/mapas/014_tiempo_viaje_Clark_h.tif"
@@ -110,17 +94,21 @@ v_max_m_s <- 2.00
 pendiente_minima <- 0.001
 
 # Paso temporal para la curva tiempo-area.
-# Por coherencia con el flujo HU-SCS, se deja inicialmente en 30 min.
+# Por coherencia con los hietogramas/HU previos, se deja inicialmente en 30 min.
 dt_min <- 30
 
 # Tratamiento de areas planas o celdas sin descenso D8.
-# Si TRUE, permite dirigir el flujo hacia el vecino de menor cota aunque
-# no exista descenso estricto. Es util con DTM rellenados.
+# Si TRUE, permite flujo en pendiente cero, lo que es util con DTM rellenados.
 permitir_flujo_en_planos <- TRUE
 
-# Advertencia de rendimiento. El algoritmo D8 en R puede ser lento en rasters
-# muy grandes. Para una primera prueba, si hay millones de celdas conviene
-# recortar bien la cuenca o probar con un raster remuestreado.
+# Si TRUE, los pixeles no conectados al exutorio se excluyen de la curva tiempo-area.
+# Si FALSE, el script se detiene cuando hay un porcentaje bajo de celdas conectadas.
+permitir_celdas_no_conectadas <- TRUE
+
+# Umbral minimo de celdas conectadas. Solo detiene el script si permitir_celdas_no_conectadas = FALSE.
+porcentaje_minimo_conectado <- 50
+
+# Advertencia de rendimiento. El algoritmo D8 en R puede ser lento en rasters grandes.
 max_celdas_advertencia <- 1e6
 
 # Si TRUE, guarda el raster de tiempo de viaje. Puede ser pesado.
@@ -129,23 +117,13 @@ guardar_raster_tiempo <- TRUE
 
 # 4. FUNCIONES AUXILIARES ====
 
-primer_archivo_existente <- function(candidatos, obligatorio = TRUE, etiqueta = "archivo") {
-  existe <- candidatos[file.exists(candidatos)]
-  if (length(existe) > 0) return(existe[1])
-  if (obligatorio) {
-    stop(
-      "No se encontro ", etiqueta, ". Candidatos:\n",
-      paste(candidatos, collapse = "\n")
-    )
-  }
-  return(NA_character_)
-}
-
 leer_Tc_desde_006 <- function(archivo_006, columna_Tc_006 = "tc_h") {
   if (!file.exists(archivo_006)) {
     stop("No se encuentra el archivo del script 006: ", archivo_006)
   }
+
   x <- read_csv(archivo_006, show_col_types = FALSE)
+
   if (!columna_Tc_006 %in% names(x)) {
     stop(
       "No se encuentra la columna ", columna_Tc_006,
@@ -153,17 +131,22 @@ leer_Tc_desde_006 <- function(archivo_006, columna_Tc_006 = "tc_h") {
       paste(names(x), collapse = ", ")
     )
   }
+
   tc <- unique(as.numeric(x[[columna_Tc_006]]))
   tc <- tc[is.finite(tc) & tc > 0]
+
   if (length(tc) == 0) stop("No hay valores validos de Tc en el script 006.")
+
   if (length(tc) > 1) {
     warning(
       "Hay varios valores de Tc en el archivo 006. Se usara el primero: ",
       round(tc[1], 4), " h"
     )
   }
+
   tc[1]
 }
+
 
 matriz_vecino <- function(z, dr, dc) {
   nr <- nrow(z)
@@ -179,6 +162,7 @@ matriz_vecino <- function(z, dr, dc) {
   out
 }
 
+
 indice_vecino <- function(nr, nc, dr, dc) {
   idx <- matrix(seq_len(nr * nc), nr, nc, byrow = TRUE)
   out <- matrix(NA_integer_, nr, nc)
@@ -192,11 +176,12 @@ indice_vecino <- function(nr, nc, dr, dc) {
   out
 }
 
+
 calcular_D8_y_tiempo_segmento <- function(z, res_x, res_y) {
   nr <- nrow(z)
   nc <- ncol(z)
 
-  dirs <- tibble::tibble(
+  dirs <- tibble(
     dr = c(-1, -1,  0, 1, 1, 1,  0, -1),
     dc = c( 0,  1,  1, 1, 0,-1, -1, -1)
   ) %>%
@@ -223,7 +208,6 @@ calcular_D8_y_tiempo_segmento <- function(z, res_x, res_y) {
     pendiente <- dz / dirs$distancia_m[k]
 
     if (permitir_flujo_en_planos) {
-      # En planos se admite pendiente cero; se evita pendiente negativa.
       candidato <- validas & is.finite(zn_vec) & pendiente >= 0
     } else {
       candidato <- validas & is.finite(zn_vec) & pendiente > 0
@@ -236,7 +220,10 @@ calcular_D8_y_tiempo_segmento <- function(z, res_x, res_y) {
   }
 
   mejor_pendiente[!is.finite(mejor_pendiente)] <- NA_real_
-  mejor_pendiente[is.finite(mejor_pendiente)] <- pmax(mejor_pendiente[is.finite(mejor_pendiente)], pendiente_minima)
+  mejor_pendiente[is.finite(mejor_pendiente)] <- pmax(
+    mejor_pendiente[is.finite(mejor_pendiente)],
+    pendiente_minima
+  )
 
   if (metodo_velocidad == "constante") {
     velocidad <- rep(velocidad_constante_m_s, n)
@@ -248,6 +235,7 @@ calcular_D8_y_tiempo_segmento <- function(z, res_x, res_y) {
   }
 
   tiempo_segmento_h <- mejor_distancia / velocidad / 3600
+
   tiempo_segmento_h[!validas | !is.finite(tiempo_segmento_h)] <- NA_real_
   mejor_indice[!validas] <- NA_integer_
 
@@ -259,10 +247,15 @@ calcular_D8_y_tiempo_segmento <- function(z, res_x, res_y) {
   )
 }
 
+
 calcular_tiempos_hacia_salida <- function(downstream, tiempo_segmento_h, outlet_idx, validas) {
   n <- length(downstream)
   tiempo <- rep(NA_real_, n)
-  estado <- rep(0L, n) # 0 no visitado, 1 visitando, 2 resuelto
+  estado <- rep(0L, n)
+
+  if (!is.finite(outlet_idx) || outlet_idx < 1 || outlet_idx > n || !validas[outlet_idx]) {
+    stop("El indice de exutorio no es valido o no cae sobre una celda valida.")
+  }
 
   tiempo[outlet_idx] <- 0
   estado[outlet_idx] <- 2L
@@ -270,6 +263,7 @@ calcular_tiempos_hacia_salida <- function(downstream, tiempo_segmento_h, outlet_
   resolver <- function(i) {
     if (!validas[i]) return(NA_real_)
     if (estado[i] == 2L) return(tiempo[i])
+
     if (estado[i] == 1L) {
       # Ciclo en zona plana. Se corta asignando NA.
       tiempo[i] <<- NA_real_
@@ -284,6 +278,7 @@ calcular_tiempos_hacia_salida <- function(downstream, tiempo_segmento_h, outlet_
       tiempo[i] <<- NA_real_
     } else {
       tj <- resolver(j)
+
       if (is.finite(tj) && is.finite(tiempo_segmento_h[i])) {
         tiempo[i] <<- tiempo_segmento_h[i] + tj
       } else {
@@ -296,6 +291,7 @@ calcular_tiempos_hacia_salida <- function(downstream, tiempo_segmento_h, outlet_
   }
 
   ids <- which(validas)
+
   for (i in ids) {
     if (estado[i] == 0L) resolver(i)
   }
@@ -303,19 +299,32 @@ calcular_tiempos_hacia_salida <- function(downstream, tiempo_segmento_h, outlet_
   tiempo
 }
 
-buscar_outlet_idx <- function(dtm_mask, archivo_exutorio = NA_character_) {
+
+buscar_outlet_idx <- function(dtm_mask, exutorio_sf = NULL) {
   z <- as.matrix(dtm_mask, wide = TRUE)
   nr <- nrow(z)
   nc <- ncol(z)
   validas_mat <- is.finite(z)
 
-  if (!is.na(archivo_exutorio) && file.exists(archivo_exutorio)) {
-    ex <- st_read(archivo_exutorio, quiet = TRUE)
-    ex <- st_transform(ex, crs(dtm_mask))
+  if (!is.null(exutorio_sf) && nrow(exutorio_sf) > 0) {
+    ex <- st_transform(exutorio_sf, crs(dtm_mask))
     ex_vect <- vect(ex)
-    celda <- cellFromXY(dtm_mask, crds(ex_vect)[1, , drop = FALSE])
+    xy <- crds(ex_vect)
+
+    celda <- cellFromXY(dtm_mask, xy[1, , drop = FALSE])
+
     if (length(celda) > 0 && is.finite(celda[1])) {
-      return(as.integer(celda[1]))
+      z_vec <- values(dtm_mask, mat = FALSE)
+
+      if (is.finite(z_vec[celda[1]])) {
+        return(as.integer(celda[1]))
+      }
+
+      # Si el punto cae en NoData por borde/mascara, se busca la celda valida mas cercana.
+      valid_cells <- which(is.finite(z_vec))
+      xy_valid <- xyFromCell(dtm_mask, valid_cells)
+      d2 <- (xy_valid[, 1] - xy[1, 1])^2 + (xy_valid[, 2] - xy[1, 2])^2
+      return(as.integer(valid_cells[which.min(d2)]))
     }
   }
 
@@ -324,6 +333,7 @@ buscar_outlet_idx <- function(dtm_mask, archivo_exutorio = NA_character_) {
   borde[nr, ] <- TRUE
   borde[, 1] <- TRUE
   borde[, nc] <- TRUE
+
   candidatos <- which(as.vector(t(validas_mat & borde)))
 
   if (length(candidatos) == 0) {
@@ -334,21 +344,35 @@ buscar_outlet_idx <- function(dtm_mask, archivo_exutorio = NA_character_) {
   candidatos[which.min(z_vec[candidatos])]
 }
 
+
 construir_curva_tiempo_area <- function(tiempo_h, area_celda_m2, dt_min) {
   dt_h <- dt_min / 60
   t_valid <- tiempo_h[is.finite(tiempo_h) & tiempo_h >= 0]
-  if (length(t_valid) == 0) stop("No hay tiempos de viaje validos para construir A(t).")
+
+  if (length(t_valid) == 0) {
+    stop("No hay tiempos de viaje validos para construir A(t).")
+  }
 
   tmax <- ceiling(max(t_valid) / dt_h) * dt_h
   cortes <- seq(0, tmax + dt_h, by = dt_h)
 
-  histo <- hist(t_valid, breaks = cortes, plot = FALSE, right = TRUE, include.lowest = TRUE)
+  histo <- hist(
+    t_valid,
+    breaks = cortes,
+    plot = FALSE,
+    right = TRUE,
+    include.lowest = TRUE
+  )
 
   area_intervalo_km2 <- histo$counts * area_celda_m2 / 1e6
   area_acumulada_km2 <- cumsum(area_intervalo_km2)
   area_total_km2 <- sum(area_intervalo_km2)
 
-  tibble::tibble(
+  if (!is.finite(area_total_km2) || area_total_km2 <= 0) {
+    stop("La curva tiempo-area tiene area total nula o no valida.")
+  }
+
+  tibble(
     intervalo = seq_along(area_intervalo_km2),
     tiempo_inicio_h = cortes[-length(cortes)],
     tiempo_fin_h = cortes[-1],
@@ -363,23 +387,18 @@ construir_curva_tiempo_area <- function(tiempo_h, area_celda_m2, dt_min) {
 
 # 5. LEER ENTRADAS ====
 
-archivo_dtm <- primer_archivo_existente(
-  archivos_dtm_candidatos,
-  obligatorio = TRUE,
-  etiqueta = "DTM hidrologico"
-)
+if (!file.exists(archivo_dtm)) {
+  stop("No se encuentra el DTM hidrologico: ", archivo_dtm)
+}
 
-archivo_cuenca <- primer_archivo_existente(
-  archivos_cuenca_candidatos,
-  obligatorio = FALSE,
-  etiqueta = "cuenca"
-)
-
-archivo_exutorio <- primer_archivo_existente(
-  archivos_exutorio_candidatos,
-  obligatorio = FALSE,
-  etiqueta = "exutorio"
-)
+if (!existe_capa_gpkg(capa_cuenca)) {
+  stop(
+    "No existe la capa de cuenca '", capa_cuenca, "' en el GeoPackage.\n",
+    "Ejecuta antes el script 002_importar_resultados_QGIS_a_gpkg.R.\n",
+    "Capas disponibles:\n",
+    paste(listar_capas_gpkg()$name, collapse = ", ")
+  )
+}
 
 tc_h <- leer_Tc_desde_006(archivo_006, columna_Tc_006)
 
@@ -389,19 +408,35 @@ if (is.na(crs(dtm))) {
   stop("El DTM no tiene CRS definido.")
 }
 
-if (!is.na(archivo_cuenca)) {
-  cuenca <- st_read(archivo_cuenca, quiet = TRUE)
-  cuenca <- st_make_valid(cuenca)
-  cuenca <- st_transform(cuenca, crs(dtm))
-  cuenca_vect <- vect(cuenca)
-  dtm_mask <- crop(dtm, cuenca_vect)
-  dtm_mask <- mask(dtm_mask, cuenca_vect)
+cuenca <- leer_capa_gpkg(capa_cuenca)
+cuenca <- st_zm(cuenca, drop = TRUE, what = "ZM")
+cuenca <- st_make_valid(cuenca)
+cuenca <- st_transform(cuenca, crs(dtm))
+
+exutorio <- NULL
+
+if (existe_capa_gpkg(capa_exutorio)) {
+  exutorio <- leer_capa_gpkg(capa_exutorio)
+  exutorio <- st_zm(exutorio, drop = TRUE, what = "ZM")
+  exutorio <- st_make_valid(exutorio)
+  exutorio <- st_transform(exutorio, crs(dtm))
 } else {
-  warning("No se encontro capa de cuenca. Se usaran todas las celdas validas del DTM.")
-  dtm_mask <- dtm
+  warning(
+    "No existe la capa de exutorio '", capa_exutorio,
+    "' en el GeoPackage. Se estimara como la celda valida de menor cota en el borde."
+  )
 }
 
+cuenca_vect <- vect(cuenca)
+dtm_mask <- crop(dtm, cuenca_vect)
+dtm_mask <- mask(dtm_mask, cuenca_vect)
+
 n_validas <- global(!is.na(dtm_mask), "sum", na.rm = TRUE)[1, 1]
+
+if (!is.finite(n_validas) || n_validas <= 0) {
+  stop("La mascara de cuenca no contiene celdas validas del DTM.")
+}
+
 if (n_validas > max_celdas_advertencia) {
   warning(
     "El raster contiene ", n_validas, " celdas validas. ",
@@ -418,7 +453,7 @@ validas <- is.finite(as.vector(t(z)))
 res_xy <- res(dtm_mask)
 area_celda_m2 <- res_xy[1] * res_xy[2]
 
-outlet_idx <- buscar_outlet_idx(dtm_mask, archivo_exutorio)
+outlet_idx <- buscar_outlet_idx(dtm_mask, exutorio)
 
 cat("\nCalculando direcciones D8 y tiempos de segmento...\n")
 d8 <- calcular_D8_y_tiempo_segmento(z, res_xy[1], res_xy[2])
@@ -432,18 +467,42 @@ tiempo_h <- calcular_tiempos_hacia_salida(
 )
 
 n_tiempos_validos <- sum(is.finite(tiempo_h))
+porcentaje_conectado <- 100 * n_tiempos_validos / n_validas
+
 if (n_tiempos_validos == 0) {
   stop(
     "No se obtuvieron tiempos validos hacia el exutorio. ",
-    "Revise el DTM, el exutorio o el tratamiento de planos."
+    "Revise el DTM, la capa de exutorio, la conectividad D8 o el tratamiento de planos."
+  )
+}
+
+if (!permitir_celdas_no_conectadas && porcentaje_conectado < porcentaje_minimo_conectado) {
+  stop(
+    "Solo el ", round(porcentaje_conectado, 2),
+    "% de las celdas validas conecta con el exutorio. ",
+    "Revise el exutorio o el DTM."
+  )
+}
+
+if (porcentaje_conectado < 100) {
+  warning(
+    "Solo el ", round(porcentaje_conectado, 2),
+    "% de las celdas validas conecta con el exutorio. ",
+    "La curva tiempo-area se construira con las celdas conectadas."
   )
 }
 
 # Reescalado a Tc para que max(t) = Tc.
 tiempo_h_bruto <- tiempo_h
 factor_ajuste_Tc <- NA_real_
+
 if (ajustar_tiempo_maximo_a_Tc) {
   tmax_bruto <- max(tiempo_h_bruto, na.rm = TRUE)
+
+  if (!is.finite(tmax_bruto) || tmax_bruto <= 0) {
+    stop("No se puede ajustar a Tc: el tiempo maximo bruto no es valido.")
+  }
+
   factor_ajuste_Tc <- tc_h / tmax_bruto
   tiempo_h <- tiempo_h_bruto * factor_ajuste_Tc
 }
@@ -456,7 +515,12 @@ values(r_tiempo) <- tiempo_h
 names(r_tiempo) <- "tiempo_viaje_h"
 
 if (guardar_raster_tiempo) {
-  writeRaster(r_tiempo, salida_tiempo_raster, overwrite = TRUE)
+  writeRaster(
+    r_tiempo,
+    salida_tiempo_raster,
+    overwrite = TRUE,
+    gdal = c("COMPRESS=LZW")
+  )
 }
 
 
@@ -468,7 +532,6 @@ curva_ta <- construir_curva_tiempo_area(
   dt_min = dt_min
 )
 
-# Forzar que la ultima fraccion acumulada sea exactamente 1 por redondeos.
 curva_ta <- curva_ta %>%
   mutate(
     fraccion_area_acumulada = pmin(fraccion_area_acumulada, 1)
@@ -476,13 +539,14 @@ curva_ta <- curva_ta %>%
 
 area_total_km2 <- sum(curva_ta$area_intervalo_km2, na.rm = TRUE)
 
-resumen <- tibble::tibble(
+resumen <- tibble(
   archivo_dtm = archivo_dtm,
-  archivo_cuenca = ifelse(is.na(archivo_cuenca), NA_character_, archivo_cuenca),
-  archivo_exutorio = ifelse(is.na(archivo_exutorio), NA_character_, archivo_exutorio),
+  gpkg_proyecto = gpkg_proyecto,
+  capa_cuenca = capa_cuenca,
+  capa_exutorio = ifelse(existe_capa_gpkg(capa_exutorio), capa_exutorio, NA_character_),
   n_celdas_validas_DTM = n_validas,
   n_celdas_con_tiempo_valido = n_tiempos_validos,
-  porcentaje_celdas_con_tiempo_valido = 100 * n_tiempos_validos / n_validas,
+  porcentaje_celdas_con_tiempo_valido = porcentaje_conectado,
   resolucion_x_m = res_xy[1],
   resolucion_y_m = res_xy[2],
   area_celda_m2 = area_celda_m2,
@@ -518,25 +582,25 @@ g_curva <- ggplot(curva_ta, aes(x = tiempo_fin_h, y = fraccion_area_acumulada)) 
   geom_point(size = 1.6) +
   scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
   labs(
-    title = "Curva tiempo-área para el método de Clark",
+    title = "Curva tiempo-area para el metodo de Clark",
     subtitle = paste0(
-      "Área = ", round(area_total_km2, 2), " km² | Tc = ",
+      "Area conectada = ", round(area_total_km2, 2), " km² | Tc = ",
       round(tc_h, 2), " h | dt = ", dt_min, " min"
     ),
     x = "Tiempo de viaje acumulado hasta el exutorio (h)",
-    y = "Fracción acumulada de área"
+    y = "Fraccion acumulada de area"
   ) +
   theme_minimal()
 
 g_hist <- ggplot(curva_ta, aes(x = tiempo_inicio_h, y = area_intervalo_km2)) +
   geom_col(width = dt_min / 60, align = "edge", color = "grey30") +
   labs(
-    title = "Histograma tiempo-área para el método de Clark",
+    title = "Histograma tiempo-area para el metodo de Clark",
     subtitle = paste0(
-      "Área por intervalo de tiempo | dt = ", dt_min, " min"
+      "Area por intervalo de tiempo | dt = ", dt_min, " min"
     ),
     x = "Tiempo de viaje acumulado hasta el exutorio (h)",
-    y = "Área del intervalo (km²)"
+    y = "Area del intervalo (km²)"
   ) +
   theme_minimal()
 
@@ -555,8 +619,9 @@ cat("====================================================\n")
 
 cat("\nEntradas:\n")
 cat("DTM:", archivo_dtm, "\n")
-cat("Cuenca:", ifelse(is.na(archivo_cuenca), "no encontrada; se usa DTM completo", archivo_cuenca), "\n")
-cat("Exutorio:", ifelse(is.na(archivo_exutorio), "estimado como menor cota en borde", archivo_exutorio), "\n")
+cat("GeoPackage:", gpkg_proyecto, "\n")
+cat("Cuenca:", capa_cuenca, "\n")
+cat("Exutorio:", ifelse(existe_capa_gpkg(capa_exutorio), capa_exutorio, "estimado como menor cota en borde"), "\n")
 cat("Tc usado desde 006:", round(tc_h, 3), "h\n")
 
 cat("\nConfiguracion:\n")
@@ -565,15 +630,19 @@ cat("ajustar_tiempo_maximo_a_Tc =", ajustar_tiempo_maximo_a_Tc, "\n")
 cat("dt_min =", dt_min, "min\n")
 
 cat("\nResumen principal:\n")
-print(resumen %>% select(
-  area_total_Clark_km2,
-  tc_h_006,
-  tiempo_medio_h,
-  tiempo_mediano_h,
-  tiempo_max_h,
-  porcentaje_celdas_con_tiempo_valido,
-  factor_ajuste_Tc
-) %>% mutate(across(where(is.numeric), ~ round(.x, 4))))
+print(
+  resumen %>%
+    select(
+      area_total_Clark_km2,
+      tc_h_006,
+      tiempo_medio_h,
+      tiempo_mediano_h,
+      tiempo_max_h,
+      porcentaje_celdas_con_tiempo_valido,
+      factor_ajuste_Tc
+    ) %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+)
 
 cat("\nTablas generadas:\n")
 cat(salida_curva_tiempo_area, "\n")
@@ -586,4 +655,3 @@ cat("\nFiguras generadas:\n")
 cat(salida_fig_curva, "\n")
 cat(salida_fig_hist, "\n")
 cat("====================================================\n")
-

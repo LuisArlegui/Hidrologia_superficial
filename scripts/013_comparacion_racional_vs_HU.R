@@ -4,17 +4,17 @@
 #
 # Objetivo:
 # - Comparar los caudales punta obtenidos mediante:
-#     1) Metodo racional / escenarios del bloque 007-008
+#     1) Método racional / escenarios del bloque 007-008
 #     2) Hidrograma unitario SCS del bloque 009-012
-# - Usar los nombres reales generados por los scripts anteriores
-# - Exportar una tabla comparativa y figuras de diagnostico
+# - Usar los nombres reales generados por los scripts v2 anteriores
+# - Exportar una tabla comparativa y figuras de diagnóstico
 #
 ############################################################
 
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -24,16 +24,13 @@ library(readr)
 library(ggplot2)
 library(tidyr)
 library(stringr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -42,10 +39,11 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
 # 2. RUTAS ====
 
-# Tabla del metodo racional.
+# Tabla del método racional.
 # Preferentemente se usa el resultado del script 008, porque contiene escenarios.
+# Si no existe, se usa la tabla normativa base del script 007.
 archivo_racional_008 <- "salidas/tablas/008_escenarios_Q.csv"
-archivo_racional_007 <- "salidas/tablas/007_metodo_racional_Q.csv"
+archivo_racional_007 <- "salidas/tablas/007_caudales_metodo_racional.csv"
 
 # Tabla resumen del hidrograma unitario SCS, generada por el script 012.
 archivo_HU_012 <- "salidas/tablas/012_hidrograma_final_resumen.csv"
@@ -62,10 +60,10 @@ salida_fig_lluvia  <- "salidas/figuras/013_lluvia_escorrentia_Qp_HU.png"
 
 # 3. PARAMETROS EDITABLES ====
 
-# Si el archivo 008 contiene varios escenarios, aqui se selecciona el escenario
+# Si el archivo 008 contiene varios escenarios, aquí se selecciona el escenario
 # con el que se desea comparar el hidrograma unitario.
-# Si se deja NULL, el script intentara usar un escenario llamado "Base".
-# Si no existe, usara el primer escenario disponible.
+# Si se deja NULL, el script intentará usar un escenario llamado "Base".
+# Si no existe, usará el primer escenario disponible.
 escenario_racional_objetivo <- NULL
 # Ejemplo:
 # escenario_racional_objetivo <- "Base"
@@ -73,7 +71,7 @@ escenario_racional_objetivo <- NULL
 # Escala del eje X para los periodos de retorno.
 usar_eje_x_log10 <- TRUE
 
-# Mostrar mensajes detallados de diagnostico.
+# Mostrar mensajes detallados de diagnóstico.
 mostrar_diagnostico <- TRUE
 
 
@@ -98,12 +96,12 @@ buscar_columna <- function(datos, candidatas, etiqueta = "") {
   nombres_norm <- normalizar_nombres(nombres)
   candidatas_norm <- normalizar_nombres(candidatas)
 
-  # Coincidencia exacta
+  # Coincidencia exacta.
   pos <- match(candidatas_norm, nombres_norm)
   pos <- pos[!is.na(pos)]
   if (length(pos) > 0) return(nombres[pos[1]])
 
-  # Coincidencia parcial, por si algun script cambio prefijos/sufijos
+  # Coincidencia parcial.
   for (cand in candidatas_norm) {
     pos2 <- which(str_detect(nombres_norm, fixed(cand, ignore_case = TRUE)))
     if (length(pos2) > 0) return(nombres[pos2[1]])
@@ -130,7 +128,7 @@ leer_racional <- function() {
     archivo <- archivo_racional_007
   } else {
     stop(
-      "No se encuentra ninguna tabla del metodo racional.\n",
+      "No se encuentra ninguna tabla del método racional.\n",
       "Buscadas:\n",
       archivo_racional_008, "\n",
       archivo_racional_007
@@ -145,7 +143,7 @@ leer_racional <- function() {
     cat(paste(names(datos), collapse = ", "), "\n")
   }
 
-  return(datos)
+  datos
 }
 
 
@@ -173,8 +171,6 @@ col_T_HU <- buscar_columna(
   etiqueta = "periodo de retorno HU"
 )
 
-# Nombre real del script 012: Qp_total_m3_s.
-# Tambien se aceptan posibles variantes.
 col_Q_HU <- buscar_columna(
   HU_raw,
   c(
@@ -288,7 +284,7 @@ racional_pre <- racional_raw %>%
   ) %>%
   filter(is.finite(T_anios), is.finite(Qp_racional_m3_s))
 
-# Seleccion de escenario racional.
+# Selección de escenario racional.
 escenarios_disponibles <- unique(racional_pre$Escenario_racional)
 
 if (length(escenarios_disponibles) > 1) {
@@ -302,6 +298,7 @@ if (length(escenarios_disponibles) > 1) {
     }
   } else {
     escenario_usado <- escenario_racional_objetivo
+
     if (!escenario_usado %in% escenarios_disponibles) {
       stop(
         "El escenario solicitado no existe en la tabla racional: ", escenario_usado, "\n",
@@ -380,7 +377,7 @@ comparacion_larga <- comparacion %>%
   mutate(
     Metodo = recode(
       Metodo,
-      Qp_racional_m3_s = "Metodo racional",
+      Qp_racional_m3_s = "Método racional",
       Qp_HU_m3_s = "HU-SCS"
     )
   )
@@ -389,11 +386,11 @@ g_Qp <- ggplot(comparacion_larga, aes(x = T_anios, y = Qp_m3_s, color = Metodo))
   geom_line(linewidth = 0.9) +
   geom_point(size = 2) +
   labs(
-    title = "Comparacion de caudal punta",
-    subtitle = paste0("Metodo racional frente a HU-SCS | Escenario racional: ", escenario_usado),
-    x = "Periodo de retorno, T (anios)",
+    title = "Comparación de caudal punta",
+    subtitle = paste0("Método racional frente a HU-SCS | Escenario racional: ", escenario_usado),
+    x = "Periodo de retorno, T (años)",
     y = expression(Q[p]~(m^3/s)),
-    color = "Metodo"
+    color = "Método"
   ) +
   theme_minimal()
 
@@ -409,9 +406,9 @@ g_ratio <- ggplot(comparacion, aes(x = T_anios, y = ratio_HU_racional)) +
   geom_line(linewidth = 0.9) +
   geom_point(size = 2) +
   labs(
-    title = "Relacion entre caudal punta HU-SCS y metodo racional",
+    title = "Relación entre caudal punta HU-SCS y método racional",
     subtitle = "Valores > 1 indican Qp mayor con HU-SCS",
-    x = "Periodo de retorno, T (anios)",
+    x = "Periodo de retorno, T (años)",
     y = expression(Q[p,HU] / Q[p,racional])
   ) +
   theme_minimal()
@@ -429,7 +426,7 @@ g_dif <- ggplot(comparacion, aes(x = T_anios, y = diferencia_Qp_HU_menos_raciona
   labs(
     title = "Diferencia de caudal punta",
     subtitle = expression(Q[p,HU] - Q[p,racional]),
-    x = "Periodo de retorno, T (anios)",
+    x = "Periodo de retorno, T (años)",
     y = expression(Delta~Q[p]~(m^3/s))
   ) +
   theme_minimal()
@@ -441,7 +438,6 @@ if (usar_eje_x_log10) {
 ggsave(salida_fig_dif, g_dif, width = 8, height = 5, dpi = 300)
 
 
-# Figura auxiliar solo con variables del bloque HU.
 g_lluvia <- comparacion %>%
   select(T_anios, P_total_HU_mm, Pe_total_HU_mm, Qp_HU_m3_s) %>%
   pivot_longer(
@@ -454,7 +450,7 @@ g_lluvia <- comparacion %>%
       Variable,
       P_total_HU_mm = "Lluvia total HU (mm)",
       Pe_total_HU_mm = "Lluvia efectiva HU (mm)",
-      Qp_HU_m3_s = "Qp HU-SCS (m3/s)"
+      Qp_HU_m3_s = "Qp HU-SCS (m³/s)"
     )
   ) %>%
   ggplot(aes(x = T_anios, y = Valor)) +
@@ -463,7 +459,7 @@ g_lluvia <- comparacion %>%
   facet_wrap(~ Variable, scales = "free_y") +
   labs(
     title = "Variables principales del bloque HU-SCS",
-    x = "Periodo de retorno, T (anios)",
+    x = "Periodo de retorno, T (años)",
     y = NULL
   ) +
   theme_minimal()
@@ -508,7 +504,7 @@ cat(salida_fig_ratio, "\n")
 cat(salida_fig_dif, "\n")
 cat(salida_fig_lluvia, "\n")
 
-cat("\nComparacion principal:\n")
+cat("\nComparación principal:\n")
 print(
   comparacion %>%
     select(

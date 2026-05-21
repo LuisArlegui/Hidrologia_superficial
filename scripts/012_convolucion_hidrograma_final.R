@@ -15,7 +15,7 @@
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -25,16 +25,13 @@ library(readr)
 library(ggplot2)
 library(tidyr)
 library(stringr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -51,6 +48,7 @@ archivo_HU_resumen_011 <- "salidas/tablas/011_HU_SCS_resumen.csv"
 salida_hidrograma_final <- "salidas/tablas/012_hidrograma_final_largo.csv"
 salida_resumen_final <- "salidas/tablas/012_hidrograma_final_resumen.csv"
 salida_componentes_convolucion <- "salidas/tablas/012_componentes_convolucion.csv"
+
 salida_figura_hidrogramas <- "salidas/figuras/012_hidrogramas_finales.png"
 salida_figura_hietograma_hidrograma <- "salidas/figuras/012_hietograma_efectivo_hidrograma.png"
 
@@ -171,7 +169,7 @@ if (!is.null(T_seleccionados)) {
   resumen_010 <- resumen_010 %>% filter(T_anios %in% T_seleccionados)
   HU <- HU %>% filter(T_anios %in% T_seleccionados)
   HU_resumen <- HU_resumen %>% filter(T_anios %in% T_seleccionados)
-  
+
   if (nrow(lluvia_efectiva) == 0) {
     stop("Ninguno de los T_seleccionados existe en el archivo 010.")
   }
@@ -215,10 +213,11 @@ obtener_paso_unico <- function(x, nombre = "paso") {
 
 preparar_HU_en_malla <- function(hu_T, dt_h, tmax_HU_h) {
   tiempos_HU <- seq(0, tmax_HU_h, by = dt_h)
+
   if (tail(tiempos_HU, 1) < tmax_HU_h - tolerancia_tiempo_h) {
     tiempos_HU <- c(tiempos_HU, tmax_HU_h)
   }
-  
+
   q_HU <- approx(
     x = hu_T$tiempo_h,
     y = hu_T$q_unitario_m3_s_por_mm,
@@ -227,8 +226,8 @@ preparar_HU_en_malla <- function(hu_T, dt_h, tmax_HU_h) {
     yleft = 0,
     yright = 0
   )$y
-  
-  tibble::tibble(
+
+  tibble(
     tiempo_HU_h = tiempos_HU,
     q_unitario_m3_s_por_mm = q_HU
   )
@@ -238,40 +237,42 @@ convolucion_T <- function(T_i) {
   lluvia_T <- lluvia_efectiva %>%
     filter(T_anios == T_i) %>%
     arrange(bloque)
-  
+
   hu_T_original <- HU %>%
     filter(T_anios == T_i) %>%
     arrange(tiempo_h)
-  
+
+  if (nrow(lluvia_T) == 0) stop("No hay lluvia efectiva para T = ", T_i)
+  if (nrow(hu_T_original) == 0) stop("No hay HU-SCS para T = ", T_i)
+
   dt_h <- obtener_paso_unico(lluvia_T$dt_h, paste0("dt_h para T = ", T_i))
   dt_min <- obtener_paso_unico(lluvia_T$dt_min, paste0("dt_min para T = ", T_i))
-  
+
   # El HU de 011 normalmente ya tiene el mismo paso que la lluvia efectiva.
   # Aun asi, se interpola a la malla de la lluvia efectiva para que la convolucion sea estable.
   tmax_HU_h <- max(hu_T_original$tiempo_h, na.rm = TRUE)
   hu_T <- preparar_HU_en_malla(hu_T_original, dt_h, tmax_HU_h)
-  
+
   n_lluvia <- nrow(lluvia_T)
   n_HU <- nrow(hu_T)
   n_total <- n_lluvia + n_HU - 1
-  
+
   tiempos_h <- seq(0, by = dt_h, length.out = n_total)
   Q_directo <- rep(0, n_total)
-  
+
   lista_componentes <- vector("list", n_lluvia)
-  
+
   for (j in seq_len(n_lluvia)) {
     Pe_j <- lluvia_T$Pe_incremental_mm[j]
     bloque_j <- lluvia_T$bloque[j]
     inicio_j <- lluvia_T$tiempo_inicio_h[j]
-    
-    # Si Pe_j = 0, no aporta caudal, pero se mantiene la estructura si se exportan componentes.
+
     contribucion_j <- Pe_j * hu_T$q_unitario_m3_s_por_mm
     indices <- j:(j + n_HU - 1)
     Q_directo[indices] <- Q_directo[indices] + contribucion_j
-    
+
     if (exportar_componentes) {
-      lista_componentes[[j]] <- tibble::tibble(
+      lista_componentes[[j]] <- tibble(
         T_anios = T_i,
         bloque_lluvia = bloque_j,
         tiempo_inicio_bloque_h = inicio_j,
@@ -282,10 +283,10 @@ convolucion_T <- function(T_i) {
       )
     }
   }
-  
+
   Q_total <- Q_directo + Q_base_m3_s
-  
-  hidrograma <- tibble::tibble(
+
+  hidrograma <- tibble(
     T_anios = T_i,
     tiempo_h = round(tiempos_h, digitos_tiempo),
     Q_directo_m3_s = Q_directo,
@@ -294,9 +295,9 @@ convolucion_T <- function(T_i) {
     dt_h = dt_h,
     dt_min = dt_min
   )
-  
+
   # Añadir la lluvia efectiva sobre la misma malla temporal para facilitar graficos.
-  lluvia_malla <- tibble::tibble(
+  lluvia_malla <- tibble(
     T_anios = T_i,
     tiempo_h = round(lluvia_T$tiempo_inicio_h, digitos_tiempo),
     bloque = lluvia_T$bloque,
@@ -304,7 +305,7 @@ convolucion_T <- function(T_i) {
     Pe_incremental_mm = lluvia_T$Pe_incremental_mm,
     intensidad_efectiva_mm_h = lluvia_T$intensidad_efectiva_mm_h
   )
-  
+
   hidrograma <- hidrograma %>%
     left_join(lluvia_malla, by = c("T_anios", "tiempo_h")) %>%
     mutate(
@@ -313,20 +314,27 @@ convolucion_T <- function(T_i) {
       Pe_incremental_mm = ifelse(is.na(Pe_incremental_mm), 0, Pe_incremental_mm),
       intensidad_efectiva_mm_h = ifelse(is.na(intensidad_efectiva_mm_h), 0, intensidad_efectiva_mm_h)
     )
-  
+
   Pe_total_mm <- sum(lluvia_T$Pe_incremental_mm, na.rm = TRUE)
   P_total_mm <- sum(lluvia_T$P_incremental_mm, na.rm = TRUE)
-  A_km2 <- if ("A_km2" %in% names(hu_T_original)) unique(hu_T_original$A_km2)[1] else NA_real_
+
+  A_km2 <- if ("A_km2" %in% names(hu_T_original)) {
+    unique(hu_T_original$A_km2)[1]
+  } else {
+    NA_real_
+  }
+
   volumen_objetivo_m3 <- if (is.finite(A_km2)) Pe_total_mm * 1000 * A_km2 else NA_real_
   volumen_directo_m3 <- integrar_trapecios(hidrograma$tiempo_h, hidrograma$Q_directo_m3_s) * 3600
   volumen_total_m3 <- integrar_trapecios(hidrograma$tiempo_h, hidrograma$Q_total_m3_s) * 3600
-  
+
   Qp_directo <- max(hidrograma$Q_directo_m3_s, na.rm = TRUE)
   Qp_total <- max(hidrograma$Q_total_m3_s, na.rm = TRUE)
   tiempo_pico_h <- hidrograma$tiempo_h[which.max(hidrograma$Q_total_m3_s)][1]
-  
-  resumen <- tibble::tibble(
+
+  resumen <- tibble(
     T_anios = T_i,
+    metodo = "HU_SCS",
     A_km2 = A_km2,
     dt_min = dt_min,
     dt_h = dt_h,
@@ -350,9 +358,9 @@ convolucion_T <- function(T_i) {
       NA_real_
     )
   )
-  
-  componentes <- if (exportar_componentes) bind_rows(lista_componentes) else tibble::tibble()
-  
+
+  componentes <- if (exportar_componentes) bind_rows(lista_componentes) else tibble()
+
   list(
     hidrograma = hidrograma,
     resumen = resumen,
@@ -382,12 +390,19 @@ if (exportar_componentes) {
 
 # 9. FIGURAS ====
 
+orden_T <- sort(unique(hidrograma_final$T_anios))
+
 hidrograma_plot <- hidrograma_final %>%
-  mutate(T_label = paste0("T = ", T_anios, " años"))
+  mutate(
+    T_label = factor(
+      paste0("T = ", T_anios, " años"),
+      levels = paste0("T = ", orden_T, " años")
+    )
+  )
 
 g_hid <- ggplot(hidrograma_plot, aes(x = tiempo_h, y = Q_total_m3_s)) +
   geom_line(linewidth = 0.8) +
-  facet_wrap(~ T_label, scales = "free_y") +
+  facet_wrap(~ T_label, ncol = 3, scales = "free_y") +
   labs(
     title = "Hidrogramas finales de avenida",
     subtitle = "Convolución discreta de lluvia efectiva SCS-CN e hidrograma unitario SCS",
@@ -414,7 +429,10 @@ combo_plot <- hidrograma_final %>%
     Qmax = max(Q_total_m3_s, na.rm = TRUE),
     Imax = max(intensidad_efectiva_mm_h, na.rm = TRUE),
     intensidad_efectiva_escalada = ifelse(Imax > 0, intensidad_efectiva_mm_h / Imax * Qmax, 0),
-    T_label = paste0("T = ", T_anios, " años")
+    T_label = factor(
+      paste0("T = ", T_anios, " años"),
+      levels = paste0("T = ", orden_T, " años")
+    )
   ) %>%
   ungroup()
 
@@ -427,7 +445,7 @@ g_combo <- ggplot(combo_plot, aes(x = tiempo_h)) +
     color = "grey40"
   ) +
   geom_line(aes(y = Q_total_m3_s), linewidth = 0.8) +
-  facet_wrap(~ T_label, scales = "free_y") +
+  facet_wrap(~ T_label, ncol = 3, scales = "free_y") +
   labs(
     title = "Hietograma efectivo e hidrograma final",
     subtitle = "Las barras de lluvia efectiva están escaladas para facilitar la comparación visual",

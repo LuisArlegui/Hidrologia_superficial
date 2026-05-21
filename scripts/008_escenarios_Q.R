@@ -7,11 +7,16 @@
 # - Recalcular tc, I(T,tc), P0, C y Q
 # - Comparar cada escenario con el escenario base
 #
+# Nota:
+# - Este script usa la formulación de tc de la Norma 5.2-IC.
+# - Es un análisis de escenarios del método racional normativo.
+#
 ############################################################
+
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -20,12 +25,13 @@ library(dplyr)
 library(readr)
 library(ggplot2)
 library(tidyr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -34,10 +40,10 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
 # 2. RUTAS ====
 
-archivo_param_005 <- "salidas/tablas/parametros_hidrologicos_resumen.csv"
-archivo_estat_P0  <- "salidas/tablas/estadisticos_P0.csv"
-archivo_morf      <- "salidas/tablas/morfometria_cauce_principal.csv"
-archivo_lluvias   <- "salidas/tablas/lluvias_diseno_comparacion.csv"
+archivo_param_005 <- "salidas/tablas/005_parametros_hidrologicos_resumen.csv"
+archivo_estat_P0  <- "salidas/tablas/005_estadisticos_P0.csv"
+archivo_morf      <- "salidas/tablas/004_morfometria_cauce_principal.csv"
+archivo_lluvias   <- "salidas/tablas/003_lluvias_diseno_comparacion.csv"
 
 salida_escenarios <- "salidas/tablas/008_escenarios_Q.csv"
 salida_resumen    <- "salidas/tablas/008_resumen_escenarios_Q.csv"
@@ -59,7 +65,7 @@ I1_Id_base <- 10
 
 # 4. TABLA BETA 5.2-IC ====
 
-tabla_beta <- tibble::tibble(
+tabla_beta <- tibble(
   region = c("93"),
   beta_m = c(1.70),
   Delta50 = c(0.20),
@@ -92,14 +98,14 @@ tabla_beta <- tibble::tibble(
 #   <1 reduce directamente Q por almacenamiento/laminación,
 #   por ejemplo depósitos de tormenta o humedales.
 
-escenarios <- tibble::tibble(
+escenarios <- tibble(
   escenario = c(
     "Base",
     "Reforestacion_moderada",
     "Reforestacion_intensa",
     "Abancalamiento",
     "Depositos_tormenta",
-    "Combinado" # intenta ser escenario de "maxima internvecion razonable"
+    "Combinado"
   ),
   factor_P0 = c(1.00, 1.10, 1.25, 1.10, 1.00, 1.35),
   factor_Jc = c(1.00, 0.95, 0.90, 0.70, 1.00, 0.65),
@@ -136,19 +142,26 @@ lluvias   <- read_csv(archivo_lluvias, show_col_types = FALSE)
 # 7. COMPROBACIONES DE CAMPOS ====
 
 if (!("area_cuenca_km2" %in% names(param_005))) {
-  stop("Falta area_cuenca_km2 en parametros_hidrologicos_resumen.csv")
+  stop("Falta area_cuenca_km2 en 005_parametros_hidrologicos_resumen.csv")
 }
 
-if (!("PO_ponderado_mm" %in% names(estat_P0))) {
-  stop("Falta PO_ponderado_mm en estadisticos_P0.csv")
+if (!("P0_ponderado_mm" %in% names(estat_P0))) {
+  stop(
+    "Falta P0_ponderado_mm en 005_estadisticos_P0.csv.\n",
+    "Campos disponibles: ", paste(names(estat_P0), collapse = ", ")
+  )
 }
 
 if (!all(c("Lc_km", "Jc") %in% names(morf))) {
-  stop("Faltan Lc_km o Jc en morfometria_cauce_principal.csv")
+  stop("Faltan Lc_km o Jc en 004_morfometria_cauce_principal.csv")
 }
 
 if (!all(c("T", metodo_Pd) %in% names(lluvias))) {
-  stop("Faltan T o el método de Pd seleccionado en lluvias_diseno_comparacion.csv")
+  stop(
+    "Faltan T o el método de Pd seleccionado en 003_lluvias_diseno_comparacion.csv.\n",
+    "Método seleccionado: ", metodo_Pd, "\n",
+    "Campos disponibles: ", paste(names(lluvias), collapse = ", ")
+  )
 }
 
 if (!(region_norma %in% tabla_beta$region)) {
@@ -162,10 +175,10 @@ if (!(usar_delta %in% names(tabla_beta))) {
 
 # 8. PARAMETROS BASE ====
 
-A_km2_base <- param_005$area_cuenca_km2[1]
-P0i_base   <- estat_P0$PO_ponderado_mm[1]
-Lc_base    <- morf$Lc_km[1]
-Jc_base    <- morf$Jc[1]
+A_km2_base <- as.numeric(param_005$area_cuenca_km2[1])
+P0i_base   <- as.numeric(estat_P0$P0_ponderado_mm[1])
+Lc_base    <- as.numeric(morf$Lc_km[1])
+Jc_base    <- as.numeric(morf$Jc[1])
 
 beta_reg <- tabla_beta %>% filter(region == region_norma)
 Delta_usada <- beta_reg[[usar_delta]][1]
@@ -179,12 +192,12 @@ if (!is.finite(Jc_base) || Jc_base <= 0) stop("Jc no válido.")
 # 9. FUNCIONES AUXILIARES ====
 
 obtener_FT <- function(T, beta_reg) {
-  
+
   if (T %in% c(2, 5, 25, 100, 500)) {
     campo <- paste0("FT_", T)
     return(as.numeric(beta_reg[[campo]]))
   }
-  
+
   T_base <- c(2, 5, 25, 100, 500)
   FT_base <- c(
     beta_reg$FT_2,
@@ -193,7 +206,7 @@ obtener_FT <- function(T, beta_reg) {
     beta_reg$FT_100,
     beta_reg$FT_500
   )
-  
+
   approx(
     x = log10(T_base),
     y = FT_base,
@@ -218,9 +231,9 @@ calcular_KA <- function(A_km2) {
 
 
 calcular_C_52IC <- function(Pd_mm, KA, P0_mm) {
-  
+
   x <- (Pd_mm * KA) / P0_mm
-  
+
   ifelse(
     x > 1,
     ((x - 1) * (x + 23)) / ((x + 11)^2),
@@ -247,32 +260,32 @@ resultado_esc <- tidyr::crossing(
   rowwise() %>%
   mutate(
     A_km2 = A_km2_base,
-    
+
     P0i_mm = P0i_base * factor_P0,
     Lc_km = Lc_base * factor_Lc,
     Jc = Jc_base * factor_Jc,
     I1_Id = I1_Id_base * factor_I1_Id,
-    
+
     tc_h = calcular_tc_52IC(Lc_km, Jc),
     tc_min = tc_h * 60,
-    
+
     KA = calcular_KA(A_km2),
-    
+
     FT = obtener_FT(T_anios, beta_reg),
     beta_m = beta_reg$beta_m[1],
     Delta_usada = Delta_usada,
     beta = (beta_m - Delta_usada) * FT,
     P0_mm = P0i_mm * beta,
-    
+
     Id_mm_h = Pd_mm * KA / 24,
     Fa = I1_Id^(3.5287 - 2.5287 * tc_h^0.1),
     Fint = Fa,
     I_mm_h = Id_mm_h * Fint,
-    
+
     Kt = 1 + tc_h^1.25 / (tc_h^1.25 + 14),
-    
+
     C = calcular_C_52IC(Pd_mm, KA, P0_mm),
-    
+
     Q_bruto_m3_s = (I_mm_h * C * A_km2 * Kt) / 3.6,
     Q_m3_s = Q_bruto_m3_s * factor_laminacion_Q
   ) %>%
@@ -314,11 +327,8 @@ write_csv(resultado_esc, salida_escenarios)
 write_csv(resumen_esc, salida_resumen)
 
 
-# ==========================================================
-# 15. FIGURAS
-# ==========================================================
+# 15. FIGURAS ====
 
-# Orden deseado de escenarios
 niveles_escenarios <- c(
   "Base",
   "Reforestacion_moderada",
@@ -333,7 +343,6 @@ resultado_esc$escenario <- factor(
   levels = niveles_escenarios
 )
 
-# Colores
 colores_escenarios <- c(
   "Base" = "black",
   "Reforestacion_moderada" = "forestgreen",
@@ -343,7 +352,6 @@ colores_escenarios <- c(
   "Combinado" = "red3"
 )
 
-# Tipos de línea
 tipos_escenarios <- c(
   "Base" = "solid",
   "Reforestacion_moderada" = "dashed",
@@ -354,10 +362,6 @@ tipos_escenarios <- c(
 )
 
 
-# ----------------------------------------------------------
-# Q vs T
-# ----------------------------------------------------------
-
 g_Q <- ggplot(
   resultado_esc,
   aes(
@@ -365,7 +369,7 @@ g_Q <- ggplot(
     y = Q_m3_s,
     color = escenario,
     linetype = escenario,
-    shape= escenario
+    shape = escenario
   )
 ) +
   geom_line(linewidth = 1.1) +
@@ -377,17 +381,15 @@ g_Q <- ggplot(
   ) +
   labs(
     title = "Caudal punta por escenario",
+    subtitle = "Método racional con tc según Norma 5.2-IC",
     x = "Periodo de retorno, T (años)",
     y = expression(Q[T]~"(m"^3*"/s)"),
     color = "Escenario",
-    linetype = "Escenario"
+    linetype = "Escenario",
+    shape = "Escenario"
   ) +
   theme_gray()
 
-
-# ----------------------------------------------------------
-# Reducción porcentual
-# ----------------------------------------------------------
 
 g_red <- resultado_esc %>%
   filter(escenario != "Base") %>%
@@ -397,7 +399,7 @@ g_red <- resultado_esc %>%
       y = reduccion_Q_pct,
       color = escenario,
       linetype = escenario,
-      shape= escenario
+      shape = escenario
     )
   ) +
   geom_hline(
@@ -414,17 +416,15 @@ g_red <- resultado_esc %>%
   ) +
   labs(
     title = "Reducción porcentual de Q respecto al escenario base",
+    subtitle = "Método racional con tc según Norma 5.2-IC",
     x = "Periodo de retorno, T (años)",
     y = "Reducción de Q (%)",
     color = "Escenario",
-    linetype = "Escenario"
+    linetype = "Escenario",
+    shape = "Escenario"
   ) +
   theme_gray()
 
-
-# ----------------------------------------------------------
-# C vs T
-# ----------------------------------------------------------
 
 g_C <- ggplot(
   resultado_esc,
@@ -433,7 +433,7 @@ g_C <- ggplot(
     y = C,
     color = escenario,
     linetype = escenario,
-    shape= escenario
+    shape = escenario
   )
 ) +
   geom_line(linewidth = 1.1) +
@@ -445,22 +445,18 @@ g_C <- ggplot(
   ) +
   labs(
     title = "Coeficiente de escorrentía por escenario",
+    subtitle = "Método racional con tc según Norma 5.2-IC",
     x = "Periodo de retorno, T (años)",
     y = "C",
     color = "Escenario",
-    linetype = "Escenario"
+    linetype = "Escenario",
+    shape = "Escenario"
   ) +
   theme_gray()
 
 
-# ----------------------------------------------------------
-# Guardar figuras
-# ----------------------------------------------------------
-
 ggsave(salida_fig_Q, g_Q, width = 8, height = 5, dpi = 300)
-
 ggsave(salida_fig_red, g_red, width = 8, height = 5, dpi = 300)
-
 ggsave(salida_fig_C, g_C, width = 8, height = 5, dpi = 300)
 
 print(g_Q)
@@ -474,10 +470,16 @@ cat("\n====================================================\n")
 cat("SCRIPT 008 FINALIZADO\n")
 cat("====================================================\n")
 
+cat("\nArchivos de entrada:\n")
+cat("Parametros 005:", archivo_param_005, "\n")
+cat("P0 005:", archivo_estat_P0, "\n")
+cat("Morfometria 004:", archivo_morf, "\n")
+cat("Lluvias 003:", archivo_lluvias, "\n")
+
 cat("\nEscenarios evaluados:\n")
 print(escenarios)
 
-cat("\nParámetros base:\n")
+cat("\nParametros base:\n")
 cat("A =", round(A_km2_base, 4), "km2\n")
 cat("P0i =", round(P0i_base, 3), "mm\n")
 cat("Lc =", round(Lc_base, 4), "km\n")

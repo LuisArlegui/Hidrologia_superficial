@@ -17,7 +17,7 @@
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr", "scales")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr", "scales", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -28,16 +28,13 @@ library(ggplot2)
 library(tidyr)
 library(stringr)
 library(scales)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -46,11 +43,11 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
 # 2. RUTAS ====
 
+# Preferentemente se usa 008, porque contiene los escenarios.
+# Si no existe, se usa el resultado base del metodo racional del script 007.
 archivos_racional_candidatos <- c(
   "salidas/tablas/008_escenarios_Q.csv",
-  "salidas/tablas/007_metodo_racional_Q.csv",
-  "salidas/tablas/007_resultados_metodo_racional.csv",
-  "salidas/tablas/013_comparacion_racional_vs_HU.csv"
+  "salidas/tablas/007_caudales_metodo_racional.csv"
 )
 
 archivo_SCS <- "salidas/tablas/012_hidrograma_final_resumen.csv"
@@ -67,6 +64,13 @@ salida_fig_volumen <- "salidas/figuras/017_volumen_SCS_Clark.png"
 
 
 # 3. PARAMETROS EDITABLES ====
+
+# Si la tabla racional procede del script 008 y contiene escenarios,
+# se comparara este escenario con HU-SCS y HU-Clark.
+# Si se deja NULL, se usa "Base" si existe; si no existe, el primer escenario.
+escenario_racional_objetivo <- NULL
+# Ejemplo:
+# escenario_racional_objetivo <- "Base"
 
 # Si TRUE, usa escala logaritmica en el eje X de los periodos de retorno.
 usar_x_log10 <- TRUE
@@ -93,37 +97,103 @@ primer_archivo_existente <- function(candidatos, obligatorio = TRUE, etiqueta = 
     )
   }
 
-  return(NA_character_)
+  NA_character_
+}
+
+normalizar_nombres <- function(x) {
+  x %>%
+    str_replace_all("á", "a") %>%
+    str_replace_all("é", "e") %>%
+    str_replace_all("í", "i") %>%
+    str_replace_all("ó", "o") %>%
+    str_replace_all("ú", "u") %>%
+    str_replace_all("Á", "A") %>%
+    str_replace_all("É", "E") %>%
+    str_replace_all("Í", "I") %>%
+    str_replace_all("Ó", "O") %>%
+    str_replace_all("Ú", "U")
 }
 
 buscar_columna <- function(tabla, candidatos, etiqueta, obligatorio = TRUE) {
-  cols <- intersect(candidatos, names(tabla))
+  nombres <- names(tabla)
+  nombres_norm <- normalizar_nombres(nombres)
+  candidatos_norm <- normalizar_nombres(candidatos)
 
-  if (length(cols) == 0) {
-    mensaje <- paste0(
-      "No se encontro columna para ", etiqueta, ".\n",
-      "Candidatas: ", paste(candidatos, collapse = ", "), "\n",
-      "Columnas disponibles: ", paste(names(tabla), collapse = ", ")
-    )
+  # Coincidencia exacta.
+  pos <- match(candidatos_norm, nombres_norm)
+  pos <- pos[!is.na(pos)]
 
-    if (obligatorio) stop(mensaje) else warning(mensaje)
-    return(NA_character_)
+  if (length(pos) > 0) return(nombres[pos[1]])
+
+  # Coincidencia parcial.
+  for (cand in candidatos_norm) {
+    pos2 <- which(str_detect(nombres_norm, fixed(cand, ignore_case = TRUE)))
+    if (length(pos2) > 0) return(nombres[pos2[1]])
   }
 
-  return(cols[1])
-}
+  mensaje <- paste0(
+    "No se encontro columna para ", etiqueta, ".\n",
+    "Candidatas: ", paste(candidatos, collapse = ", "), "\n",
+    "Columnas disponibles: ", paste(names(tabla), collapse = ", ")
+  )
 
-extraer_columna_num <- function(tabla, candidatos, etiqueta, obligatorio = TRUE) {
-  col <- buscar_columna(tabla, candidatos, etiqueta, obligatorio = obligatorio)
-  if (is.na(col)) return(rep(NA_real_, nrow(tabla)))
-  suppressWarnings(as.numeric(tabla[[col]]))
+  if (obligatorio) stop(mensaje) else warning(mensaje)
+  NA_character_
 }
 
 normalizar_T <- function(x) {
   suppressWarnings(as.numeric(x))
 }
 
+filtrar_escenario_racional <- function(tabla) {
+  col_esc <- buscar_columna(
+    tabla,
+    c("escenario", "Escenario", "scenario", "Scenario", "nombre_escenario"),
+    "escenario racional",
+    obligatorio = FALSE
+  )
+
+  escenario_usado <- "Unico"
+
+  if (!is.na(col_esc)) {
+    escenarios_disponibles <- unique(as.character(tabla[[col_esc]]))
+
+    if (length(escenarios_disponibles) > 1) {
+      if (is.null(escenario_racional_objetivo)) {
+        if ("Base" %in% escenarios_disponibles) {
+          escenario_usado <- "Base"
+        } else if ("base" %in% escenarios_disponibles) {
+          escenario_usado <- "base"
+        } else {
+          escenario_usado <- escenarios_disponibles[1]
+        }
+      } else {
+        escenario_usado <- escenario_racional_objetivo
+
+        if (!escenario_usado %in% escenarios_disponibles) {
+          stop(
+            "El escenario racional solicitado no existe: ", escenario_usado, "\n",
+            "Escenarios disponibles: ", paste(escenarios_disponibles, collapse = ", ")
+          )
+        }
+      }
+
+      tabla <- tabla %>%
+        filter(as.character(.data[[col_esc]]) == escenario_usado)
+
+    } else {
+      escenario_usado <- escenarios_disponibles[1]
+    }
+  }
+
+  list(tabla = tabla, escenario_usado = escenario_usado)
+}
+
 preparar_racional <- function(tabla) {
+  filtrado <- filtrar_escenario_racional(tabla)
+  tabla <- filtrado$tabla
+  escenario_usado <- filtrado$escenario_usado
+
   col_T <- buscar_columna(
     tabla,
     c("T_anios", "T", "Tr", "T_retorno", "periodo_retorno", "Periodo_retorno", "T_return"),
@@ -141,21 +211,43 @@ preparar_racional <- function(tabla) {
 
   out <- tibble(
     T_anios = normalizar_T(tabla[[col_T]]),
-    Qp_racional_m3_s = suppressWarnings(as.numeric(tabla[[col_Q]]))
+    Qp_racional_m3_s = suppressWarnings(as.numeric(tabla[[col_Q]])),
+    escenario_racional = escenario_usado
   )
 
-  # Variables opcionales
-  C_col <- intersect(c("C", "C_racional", "coef_escorrentia", "coef_escorrentia_racional"), names(tabla))
-  if (length(C_col) > 0) out$C_racional <- suppressWarnings(as.numeric(tabla[[C_col[1]]]))
+  # Variables opcionales.
+  C_col <- buscar_columna(
+    tabla,
+    c("C", "C_racional", "coef_escorrentia", "coef_escorrentia_racional"),
+    "coeficiente C racional",
+    obligatorio = FALSE
+  )
 
-  I_col <- intersect(c("I_mm_h", "intensidad_mm_h", "I_T_tc_mm_h", "intensidad_diseno_mm_h"), names(tabla))
-  if (length(I_col) > 0) out$I_racional_mm_h <- suppressWarnings(as.numeric(tabla[[I_col[1]]]))
+  I_col <- buscar_columna(
+    tabla,
+    c("I_mm_h", "intensidad_mm_h", "I_T_tc_mm_h", "intensidad_diseno_mm_h"),
+    "intensidad racional",
+    obligatorio = FALSE
+  )
 
-  A_col <- intersect(c("A_km2", "area_km2", "Area_km2", "area_cuenca_km2"), names(tabla))
-  if (length(A_col) > 0) out$A_racional_km2 <- suppressWarnings(as.numeric(tabla[[A_col[1]]]))
+  A_col <- buscar_columna(
+    tabla,
+    c("A_km2", "area_km2", "Area_km2", "area_cuenca_km2"),
+    "area racional",
+    obligatorio = FALSE
+  )
 
-  tc_col <- intersect(c("tc_h", "Tc_h", "TC_h", "tiempo_concentracion_h"), names(tabla))
-  if (length(tc_col) > 0) out$tc_racional_h <- suppressWarnings(as.numeric(tabla[[tc_col[1]]]))
+  tc_col <- buscar_columna(
+    tabla,
+    c("tc_h", "Tc_h", "TC_h", "tiempo_concentracion_h"),
+    "tc racional",
+    obligatorio = FALSE
+  )
+
+  if (!is.na(C_col)) out$C_racional <- suppressWarnings(as.numeric(tabla[[C_col]]))
+  if (!is.na(I_col)) out$I_racional_mm_h <- suppressWarnings(as.numeric(tabla[[I_col]]))
+  if (!is.na(A_col)) out$A_racional_km2 <- suppressWarnings(as.numeric(tabla[[A_col]]))
+  if (!is.na(tc_col)) out$tc_racional_h <- suppressWarnings(as.numeric(tabla[[tc_col]]))
 
   out %>%
     filter(is.finite(T_anios), is.finite(Qp_racional_m3_s)) %>%
@@ -283,6 +375,8 @@ racional <- preparar_racional(racional_raw)
 SCS <- preparar_HU(SCS_raw, metodo = "SCS")
 Clark <- preparar_HU(Clark_raw, metodo = "Clark")
 
+escenario_usado <- unique(racional$escenario_racional)[1]
+
 comparacion <- racional %>%
   full_join(SCS, by = "T_anios") %>%
   full_join(Clark, by = "T_anios") %>%
@@ -362,12 +456,20 @@ write_csv(resumen_ratios, salida_resumen_ratios)
 
 # 9. FIGURAS ====
 
-g_Q <- ggplot(comparacion_larga_Q, aes(x = T_anios, y = Qp_m3_s, group = metodo, linetype = metodo)) +
+g_Q <- ggplot(
+  comparacion_larga_Q,
+  aes(x = T_anios, y = Qp_m3_s, group = metodo, linetype = metodo)
+) +
   geom_line(linewidth = 0.9) +
   geom_point(size = 2) +
   labs(
     title = "Comparacion de caudal punta entre metodos",
-    subtitle = "Metodo racional, hidrograma unitario SCS e hidrograma unitario de Clark",
+    subtitle = paste0(
+      "Metodo racional, HU-SCS y HU-Clark",
+      ifelse(!is.na(escenario_usado) && escenario_usado != "Unico",
+             paste0(" | Escenario racional: ", escenario_usado),
+             "")
+    ),
     x = "Periodo de retorno, T (años)",
     y = expression(Q[p]~(m^3/s)),
     linetype = "Metodo"
@@ -385,7 +487,10 @@ if (etiquetar_Qp) {
 ggsave(salida_fig_Qp, g_Q, width = 10, height = 6, dpi = 300)
 
 
-g_ratio <- ggplot(ratios_largo, aes(x = T_anios, y = ratio, group = comparacion, linetype = comparacion)) +
+g_ratio <- ggplot(
+  ratios_largo,
+  aes(x = T_anios, y = ratio, group = comparacion, linetype = comparacion)
+) +
   geom_hline(yintercept = 1, linewidth = 0.5, alpha = 0.6) +
   geom_line(linewidth = 0.9) +
   geom_point(size = 2) +
@@ -421,7 +526,10 @@ if (any(is.finite(comparacion$tiempo_pico_SCS_h)) || any(is.finite(comparacion$t
       )
     )
 
-  g_tp <- ggplot(tiempos_largo, aes(x = T_anios, y = tiempo_pico_h, group = metodo, linetype = metodo)) +
+  g_tp <- ggplot(
+    tiempos_largo,
+    aes(x = T_anios, y = tiempo_pico_h, group = metodo, linetype = metodo)
+  ) +
     geom_line(linewidth = 0.9, na.rm = TRUE) +
     geom_point(size = 2, na.rm = TRUE) +
     labs(
@@ -456,7 +564,10 @@ if (any(is.finite(comparacion$volumen_SCS_m3)) || any(is.finite(comparacion$volu
       )
     )
 
-  g_vol <- ggplot(volumen_largo, aes(x = T_anios, y = volumen_m3, group = metodo, linetype = metodo)) +
+  g_vol <- ggplot(
+    volumen_largo,
+    aes(x = T_anios, y = volumen_m3, group = metodo, linetype = metodo)
+  ) +
     geom_line(linewidth = 0.9, na.rm = TRUE) +
     geom_point(size = 2, na.rm = TRUE) +
     labs(
@@ -485,6 +596,7 @@ cat("\nArchivos de entrada:\n")
 cat("Racional:", archivo_racional, "\n")
 cat("HU-SCS:", archivo_SCS, "\n")
 cat("HU-Clark:", archivo_Clark, "\n")
+cat("Escenario racional usado:", escenario_usado, "\n")
 
 cat("\nTablas generadas:\n")
 cat(salida_comparacion, "\n")
@@ -519,6 +631,6 @@ print(resumen_ratios %>% mutate(across(where(is.numeric), ~ round(.x, 4))))
 
 cat("====================================================\n")
 
-# Mostrar figuras principales en la ventana grafica
+# Mostrar figuras principales en la ventana grafica.
 print(g_Q)
 print(g_ratio)

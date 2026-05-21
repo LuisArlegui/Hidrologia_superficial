@@ -15,7 +15,7 @@
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -25,16 +25,13 @@ library(readr)
 library(ggplot2)
 library(tidyr)
 library(stringr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -43,6 +40,7 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 
 # 2. RUTAS ====
 
+# Entrada procedente del script 006 versión Norma 5.2-IC.
 archivo_idf_006 <- "salidas/tablas/006_lluvia_IDF_tiempo_concentracion.csv"
 
 salida_hietogramas_largo <- "salidas/tablas/009_hietogramas_diseno_largo.csv"
@@ -64,7 +62,7 @@ dt_min <- 30
 
 # Duracion total de la tormenta de diseño.
 # Opciones:
-# - "auto"  -> duracion_total_h = max(factor_duracion_tc * tc_h, duracion_minima_h)
+# - "auto" -> duracion_total_h = max(factor_duracion_tc * tc_h, duracion_minima_h)
 # - valor numerico, por ejemplo 3 para una tormenta de 3 h.
 duracion_total_h <- "auto"
 factor_duracion_tc <- 1.5
@@ -74,17 +72,15 @@ duracion_minima_h <- 1
 # Opciones:
 # - "IDF_duracion_total": P_total = I(T, duracion_total) * duracion_total
 # - "Pd_KA":              P_total = Pd * KA
-# Recomendacion inicial: "IDF_duracion_total".
 modo_lluvia_total <- "IDF_duracion_total"
 
 # Metodo de redistribucion temporal de la lluvia total.
 # Opciones:
-# - "bloques_alternos" -> patrón adimensional concentrado en el pico,
-#                         con bloques alternados derecha/izquierda.
-# - "triangular"       -> patrón triangular con pico en posicion_pico.
-# - "uniforme"         -> lluvia constante durante toda la tormenta.
+# - "bloques_alternos"
+# - "triangular"
+# - "uniforme"
 #
-# Nota importante:
+# Nota:
 # Este script NO obtiene los incrementos como diff(I(t)*t), porque eso puede
 # generar hietogramas artificialmente dominados por un único bloque inicial.
 metodo_hietograma <- "bloques_alternos"
@@ -115,7 +111,10 @@ exponente_t <- 0.1
 # 4. COMPROBAR ARCHIVOS DE ENTRADA ====
 
 if (!file.exists(archivo_idf_006)) {
-  stop("No se encuentra la tabla del script 006: ", archivo_idf_006)
+  stop(
+    "No se encuentra la tabla del script 006: ", archivo_idf_006,
+    "\nEjecuta antes 006_lluvia_IDF_tiempo_concentracion_52IC.R."
+  )
 }
 
 
@@ -155,7 +154,7 @@ if (any(!is.finite(idf_006$tc_h) | idf_006$tc_h <= 0)) stop("tc_h contiene valor
 if (!is.null(T_seleccionados)) {
   idf_006 <- idf_006 %>%
     filter(T_anios %in% T_seleccionados)
-  
+
   if (nrow(idf_006) == 0) {
     stop("Ninguno de los T_seleccionados existe en la tabla del script 006.")
   }
@@ -168,7 +167,7 @@ calcular_duracion_total <- function(tc_h) {
   if (is.character(duracion_total_h) && duracion_total_h == "auto") {
     return(max(factor_duracion_tc * tc_h, duracion_minima_h))
   }
-  
+
   dur <- suppressWarnings(as.numeric(duracion_total_h))
   if (!is.finite(dur) || dur <= 0) {
     stop("duracion_total_h debe ser 'auto' o un numero positivo en horas.")
@@ -191,31 +190,31 @@ calcular_lluvia_total <- function(Pd_mm, KA, I1_Id, dur_h) {
     I_dur_mm_h <- intensidad_idf_52IC(Pd_mm, KA, I1_Id, dur_h)
     return(I_dur_mm_h * dur_h)
   }
-  
+
   if (modo_lluvia_total == "Pd_KA") {
     return(Pd_mm * KA)
   }
-  
+
   stop("modo_lluvia_total no reconocido: ", modo_lluvia_total)
 }
 
 posiciones_bloques_alternos <- function(n, posicion_pico = 0.5) {
   centro <- round(posicion_pico * n)
   centro <- max(1, min(n, centro))
-  
+
   posiciones <- centro
   paso <- 1
-  
+
   while (length(posiciones) < n) {
     derecha <- centro + paso
     izquierda <- centro - paso
-    
+
     if (derecha <= n) posiciones <- c(posiciones, derecha)
     if (izquierda >= 1) posiciones <- c(posiciones, izquierda)
-    
+
     paso <- paso + 1
   }
-  
+
   posiciones[seq_len(n)]
 }
 
@@ -225,68 +224,68 @@ limitar_pico_pesos <- function(w, fraccion_maxima = 0.20, max_iter = 100) {
   if (!is.finite(fraccion_maxima) || fraccion_maxima <= 0 || fraccion_maxima >= 1) {
     return(w / sum(w))
   }
-  
+
   w <- w / sum(w)
-  
+
   for (i in seq_len(max_iter)) {
     idx <- which(w > fraccion_maxima)
     if (length(idx) == 0) break
-    
+
     exceso <- sum(w[idx] - fraccion_maxima)
     w[idx] <- fraccion_maxima
-    
+
     idx_libres <- which(w < fraccion_maxima)
     if (length(idx_libres) == 0) break
-    
+
     w[idx_libres] <- w[idx_libres] + exceso * w[idx_libres] / sum(w[idx_libres])
     w <- w / sum(w)
   }
-  
+
   w / sum(w)
 }
 
 pesos_hietograma <- function(n, metodo = "bloques_alternos", posicion_pico = 0.5) {
   if (n < 1) stop("El numero de bloques debe ser mayor que cero.")
-  
+
   if (metodo == "uniforme") {
     return(rep(1 / n, n))
   }
-  
+
   if (metodo == "triangular") {
     centro <- round(posicion_pico * n)
     centro <- max(1, min(n, centro))
-    
+
     dist <- abs(seq_len(n) - centro)
     max_dist <- max(dist)
-    
+
     if (max_dist == 0) {
       w <- 1
     } else {
       w <- 1 - dist / (max_dist + 1)
     }
-    
+
     w <- pmax(w, 0)
     return(w / sum(w))
   }
-  
+
   if (metodo == "bloques_alternos") {
     # Se genera un patrón adimensional de intensidades relativas,
     # descendente desde el bloque pico. No procede de diff(I(t)*t).
     posiciones <- posiciones_bloques_alternos(n, posicion_pico)
-    
+
     rango <- seq_len(n) - 1
     lambda <- 1 / max(fraccion_decaimiento_bloques * n, 1)
-    
+
     pesos_ordenados <- exp(-lambda * rango)
     pesos_ordenados <- pesos_ordenados / sum(pesos_ordenados)
-    
+
     w <- rep(NA_real_, n)
     w[posiciones] <- pesos_ordenados
-    
+
     w <- limitar_pico_pesos(w, fraccion_maxima_bloque)
     return(w / sum(w))
   }
-  
+
   stop("Metodo de hietograma no reconocido: ", metodo)
 }
 
@@ -296,35 +295,35 @@ construir_hietograma_T <- function(fila) {
   KA <- fila$KA
   I1_Id <- fila$I1_Id
   tc_h <- fila$tc_h
-  
+
   dur_h <- calcular_duracion_total(tc_h)
   dt_h <- dt_min / 60
-  
+
   if (dt_h <= 0) stop("dt_min debe ser positivo.")
   if (dur_h < dt_h) stop("La duracion total debe ser mayor o igual que dt_min.")
-  
+
   n_bloques <- ceiling(dur_h / dt_h)
   tiempos_fin_h <- seq(dt_h, by = dt_h, length.out = n_bloques)
   dur_h_real <- max(tiempos_fin_h)
-  
+
   # Lluvia total de diseño para la duración real del hietograma.
   P_total_mm <- calcular_lluvia_total(Pd_mm, KA, I1_Id, dur_h_real)
-  
+
   if (!is.finite(P_total_mm) || P_total_mm <= 0) {
     stop("La lluvia total calculada no es valida para T = ", T_anios)
   }
-  
+
   # Distribución temporal adimensional.
   w <- pesos_hietograma(
     n = n_bloques,
     metodo = metodo_hietograma,
     posicion_pico = posicion_pico
   )
-  
+
   P_incremental_mm <- P_total_mm * w
   intensidad_media_total_mm_h <- P_total_mm / dur_h_real
-  
-  tibble::tibble(
+
+  tibble(
     T_anios = T_anios,
     metodo_hietograma = metodo_hietograma,
     modo_lluvia_total = modo_lluvia_total,
@@ -387,9 +386,14 @@ write_csv(resumen, salida_hietogramas_resumen)
 
 # 11. FIGURA ====
 
+orden_T <- sort(unique(hietogramas$T_anios))
+
 hietogramas_plot <- hietogramas %>%
   mutate(
-    T_label = paste0("T = ", T_anios, " años")
+    T_label = factor(
+      paste0("T = ", T_anios, " años"),
+      levels = paste0("T = ", orden_T, " años")
+    )
   )
 
 g <- ggplot(
@@ -397,7 +401,7 @@ g <- ggplot(
   aes(x = tiempo_inicio_h, y = intensidad_bloque_mm_h)
 ) +
   geom_col(width = dt_min / 60, align = "edge", color = "grey30") +
-  facet_wrap(~ T_label, scales = "free_y") +
+  facet_wrap(~ T_label, ncol = 3, scales = "free_y") +
   labs(
     title = "Hietogramas de diseño",
     subtitle = paste0(
@@ -429,6 +433,11 @@ cat("====================================================\n")
 
 cat("\nArchivo de entrada:\n")
 cat(archivo_idf_006, "\n")
+
+if ("metodo_tc" %in% names(idf_006)) {
+  cat("\nMetodo tc leído del 006:\n")
+  cat(paste(unique(idf_006$metodo_tc), collapse = ", "), "\n")
+}
 
 cat("\nConfiguracion del hietograma:\n")
 cat("Metodo =", metodo_hietograma, "\n")

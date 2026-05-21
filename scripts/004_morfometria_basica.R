@@ -38,12 +38,22 @@ dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
 
 # 2. RUTAS ====
 
-archivo_canales <- "salidas/mapas/canales.gpkg"
-archivo_dtm     <- "salidas/mapas/DTM_Burnt_Filled_Clipped.tif"
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
+} else {
+  stop("No se encuentra scripts/000_rutas_y_capas.R")
+}
 
-salida_cauce_principal <- "datos/procesados/cauce_principal.gpkg"
-salida_morfometria_detalle <- "salidas/tablas/morfometria_cauce_principal.csv"
-salida_morfometria_006 <- "datos/auxiliares/morfometria_cuenca.csv"
+archivo_dtm <- "salidas/mapas/DTM_Burnt_Filled_Clipped.tif"
+
+capa_canales <- capas_gpkg$red_drenaje
+capa_cauce_principal <- "cauce_principal"
+capa_exutorio_aprox <- "exutorio_aproximado"
+capa_cabecera_cauce_principal <- "cabecera_cauce_principal"
+capa_nodos_red_drenaje <- "nodos_red_drenaje"
+
+salida_morfometria_detalle <- "salidas/tablas/004_morfometria_cauce_principal.csv"
+salida_morfometria_006 <- "datos/auxiliares/004_morfometria_para_006.csv"
 
 # 3. PARAMETROS ====
 
@@ -52,15 +62,19 @@ paso_m <- 10
 
 # 4. LEER DATOS ====
 
-if (!file.exists(archivo_canales)) {
-  stop("No se encuentra la capa de canales: ", archivo_canales)
-}
-
 if (!file.exists(archivo_dtm)) {
-  stop("No se encuentra el DTM: ", archivo_dtm)
+  stop("No se encuentra el DTM hidrologicamente corregido: ", archivo_dtm)
 }
 
-canales <- st_read(archivo_canales, quiet = TRUE)
+if (!existe_capa_gpkg(capa_canales)) {
+  stop(
+    "No existe la capa '", capa_canales, "' en el GeoPackage del proyecto.\n",
+    "Capas disponibles:\n",
+    paste(listar_capas_gpkg()$name, collapse = ", ")
+  )
+}
+
+canales <- leer_capa_gpkg(capa_canales)
 
 # Eliminar Z/M, porque GEOS no trabaja bien con XYM/XYZM
 canales <- st_zm(canales, drop = TRUE, what = "ZM")
@@ -388,12 +402,28 @@ Jc <- desnivel_m / Lc_m
 
 # 14. EXPORTAR CAUCE PRINCIPAL ====
 
-st_write(
-  cauce_principal,
-  salida_cauce_principal,
-  delete_dsn = TRUE,
-  quiet = TRUE
-)
+exutorio_aprox_sf <- st_as_sf(
+  nodos %>% filter(node == exutorio_node),
+  coords = c("x", "y"),
+  crs = st_crs(canales)
+) %>%
+  mutate(
+    tipo = "exutorio_aproximado",
+    z_m = exutorio_z,
+    order_usado = order_usado
+  )
+
+cabecera_sf <- st_as_sf(
+  nodos %>% filter(node == cabecera_node),
+  coords = c("x", "y"),
+  crs = st_crs(canales)
+) %>%
+  mutate(tipo = "cabecera_cauce_principal")
+
+guardar_capa_gpkg(cauce_principal, capa_cauce_principal, overwrite = TRUE)
+guardar_capa_gpkg(exutorio_aprox_sf, capa_exutorio_aprox, overwrite = TRUE)
+guardar_capa_gpkg(cabecera_sf, capa_cabecera_cauce_principal, overwrite = TRUE)
+guardar_capa_gpkg(nodos_sf, capa_nodos_red_drenaje, overwrite = TRUE)
 
 # 15. TABLAS DE SALIDA ====
 
@@ -432,15 +462,21 @@ write_csv(
   morfometria_006,
   salida_morfometria_006
 )
-
 # 16. RESUMEN ====
 
 cat("\n====================================================\n")
-cat("SCRIPT 004b FINALIZADO\n")
+cat("SCRIPT 004 FINALIZADO\n")
 cat("====================================================\n")
 
-cat("\nCauce principal exportado en:\n")
-cat(salida_cauce_principal, "\n")
+cat("\nGeoPackage del proyecto:\n")
+cat(gpkg_proyecto, "\n")
+
+cat("\nCapas usadas/generadas:\n")
+cat("Entrada:", capa_canales, "\n")
+cat("Salida :", capa_cauce_principal, "\n")
+cat("Salida :", capa_exutorio_aprox, "\n")
+cat("Salida :", capa_cabecera_cauce_principal, "\n")
+cat("Salida :", capa_nodos_red_drenaje, "\n")
 
 cat("\nMorfometría detallada:\n")
 cat(salida_morfometria_detalle, "\n")
@@ -460,8 +496,10 @@ cat("Desnivel =", round(desnivel_m, 2), "m\n")
 cat("Jc =", round(Jc, 5), "\n")
 cat("Pendiente =", round(100 * Jc, 3), "%\n")
 
-cat("\nATENCION: revisa visualmente cauce_principal.gpkg en QGIS.\n")
-cat("El método ya no busca el diámetro del grafo, sino el camino ascendente más largo desde el exutorio.\n")
+cat("\nCapas actualmente disponibles en el GeoPackage:\n")
+print(listar_capas_gpkg())
+
+cat("\nATENCION: revisa visualmente la capa '", capa_cauce_principal, "' en QGIS.\n", sep = "")
+cat("El metodo busca el camino ascendente mas largo desde el exutorio aproximado.\n")
 
 cat("====================================================\n")
-

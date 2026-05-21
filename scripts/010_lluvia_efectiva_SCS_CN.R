@@ -15,7 +15,7 @@
 
 # 0. PAQUETES ====
 
-paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr")
+paquetes <- c("dplyr", "readr", "ggplot2", "tidyr", "stringr", "tibble")
 
 instalar <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
 if (length(instalar) > 0) install.packages(instalar)
@@ -25,16 +25,13 @@ library(readr)
 library(ggplot2)
 library(tidyr)
 library(stringr)
+library(tibble)
 
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -44,8 +41,8 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 # 2. RUTAS ====
 
 archivo_hietogramas_009 <- "salidas/tablas/009_hietogramas_diseno_largo.csv"
-archivo_parametros_005 <- "salidas/tablas/parametros_hidrologicos_resumen.csv"
-archivo_p0_005 <- "salidas/tablas/estadisticos_P0.csv"
+archivo_parametros_005 <- "salidas/tablas/005_parametros_hidrologicos_resumen.csv"
+archivo_p0_005 <- "salidas/tablas/005_estadisticos_P0.csv"
 
 salida_lluvia_efectiva_largo <- "salidas/tablas/010_lluvia_efectiva_SCS_CN_largo.csv"
 salida_lluvia_efectiva_resumen <- "salidas/tablas/010_lluvia_efectiva_SCS_CN_resumen.csv"
@@ -65,7 +62,7 @@ T_seleccionados <- NULL
 # Opciones:
 # - "CN_medio_005"       -> usa CN_medio del resumen del script 005
 # - "CN_manual"          -> usa el valor CN_manual definido más abajo
-# - "P0_ponderado_005"   -> usa PO_ponderado_mm del script 005 como abstracción inicial Ia
+# - "P0_ponderado_005"   -> usa P0_ponderado_mm del script 005 como abstracción inicial Ia
 #                            y deriva S = Ia / lambda_Ia
 # - "P0_manual"          -> usa P0_manual_mm como abstracción inicial Ia
 #
@@ -103,7 +100,10 @@ tolerancia_mm <- 1e-9
 # 4. COMPROBAR ARCHIVOS DE ENTRADA ====
 
 if (!file.exists(archivo_hietogramas_009)) {
-  stop("No se encuentra la tabla del script 009: ", archivo_hietogramas_009)
+  stop(
+    "No se encuentra la tabla del script 009: ", archivo_hietogramas_009,
+    "\nEjecuta antes 009_hietograma_diseno.R."
+  )
 }
 
 if (modo_parametros_scs %in% c("CN_medio_005", "P0_ponderado_005") &&
@@ -149,6 +149,15 @@ hietogramas <- hietogramas %>%
     P_incremental_mm = as.numeric(P_incremental_mm)
   )
 
+# Compatibilidad: si el 009 no incluye intensidad_bloque_mm_h, se calcula.
+if (!("intensidad_bloque_mm_h" %in% names(hietogramas))) {
+  hietogramas <- hietogramas %>%
+    mutate(intensidad_bloque_mm_h = P_incremental_mm / dt_h)
+} else {
+  hietogramas <- hietogramas %>%
+    mutate(intensidad_bloque_mm_h = as.numeric(intensidad_bloque_mm_h))
+}
+
 if (any(!is.finite(hietogramas$T_anios))) stop("T_anios contiene valores no validos.")
 if (any(!is.finite(hietogramas$P_incremental_mm) | hietogramas$P_incremental_mm < 0)) {
   stop("P_incremental_mm contiene valores no validos.")
@@ -157,7 +166,7 @@ if (any(!is.finite(hietogramas$P_incremental_mm) | hietogramas$P_incremental_mm 
 if (!is.null(T_seleccionados)) {
   hietogramas <- hietogramas %>%
     filter(T_anios %in% T_seleccionados)
-  
+
   if (nrow(hietogramas) == 0) {
     stop("Ninguno de los T_seleccionados existe en la tabla del script 009.")
   }
@@ -170,19 +179,19 @@ corregir_CN_humedad <- function(CN_II, condicion = "II") {
   if (!is.finite(CN_II) || CN_II <= 0 || CN_II >= 100) {
     stop("CN debe estar entre 0 y 100, sin alcanzar 100.")
   }
-  
+
   if (condicion == "II") return(CN_II)
-  
+
   if (condicion == "I") {
     CN_I <- CN_II / (2.281 - 0.01281 * CN_II)
     return(CN_I)
   }
-  
+
   if (condicion == "III") {
     CN_III <- CN_II / (0.427 + 0.00573 * CN_II)
     return(CN_III)
   }
-  
+
   stop("condicion_humedad no reconocida: ", condicion)
 }
 
@@ -190,23 +199,23 @@ obtener_parametros_scs <- function() {
   if (!is.finite(lambda_Ia) || lambda_Ia <= 0 || lambda_Ia >= 1) {
     stop("lambda_Ia debe estar entre 0 y 1.")
   }
-  
+
   if (modo_parametros_scs == "CN_medio_005") {
     parametros_005 <- read_csv(archivo_parametros_005, show_col_types = FALSE)
-    
+
     if (!("CN_medio" %in% names(parametros_005))) {
       stop(
         "No existe el campo CN_medio en ", archivo_parametros_005,
         "\nCampos disponibles: ", paste(names(parametros_005), collapse = ", ")
       )
     }
-    
+
     CN_II <- as.numeric(parametros_005$CN_medio[1])
     CN <- corregir_CN_humedad(CN_II, condicion_humedad)
     S_mm <- 25400 / CN - 254
     Ia_mm <- lambda_Ia * S_mm
-    
-    return(tibble::tibble(
+
+    return(tibble(
       modo_parametros_scs = modo_parametros_scs,
       condicion_humedad = condicion_humedad,
       CN_II = CN_II,
@@ -216,14 +225,14 @@ obtener_parametros_scs <- function() {
       lambda_Ia = lambda_Ia
     ))
   }
-  
+
   if (modo_parametros_scs == "CN_manual") {
     CN_II <- as.numeric(CN_manual)
     CN <- corregir_CN_humedad(CN_II, condicion_humedad)
     S_mm <- 25400 / CN - 254
     Ia_mm <- lambda_Ia * S_mm
-    
-    return(tibble::tibble(
+
+    return(tibble(
       modo_parametros_scs = modo_parametros_scs,
       condicion_humedad = condicion_humedad,
       CN_II = CN_II,
@@ -233,24 +242,24 @@ obtener_parametros_scs <- function() {
       lambda_Ia = lambda_Ia
     ))
   }
-  
+
   if (modo_parametros_scs == "P0_ponderado_005") {
     p0_005 <- read_csv(archivo_p0_005, show_col_types = FALSE)
-    
-    if (!("PO_ponderado_mm" %in% names(p0_005))) {
+
+    if (!("P0_ponderado_mm" %in% names(p0_005))) {
       stop(
-        "No existe el campo PO_ponderado_mm en ", archivo_p0_005,
+        "No existe el campo P0_ponderado_mm en ", archivo_p0_005,
         "\nCampos disponibles: ", paste(names(p0_005), collapse = ", ")
       )
     }
-    
-    Ia_mm <- as.numeric(p0_005$PO_ponderado_mm[1])
-    if (!is.finite(Ia_mm) || Ia_mm < 0) stop("PO_ponderado_mm no es valido.")
-    
+
+    Ia_mm <- as.numeric(p0_005$P0_ponderado_mm[1])
+    if (!is.finite(Ia_mm) || Ia_mm < 0) stop("P0_ponderado_mm no es valido.")
+
     S_mm <- Ia_mm / lambda_Ia
     CN <- 25400 / (S_mm + 254)
-    
-    return(tibble::tibble(
+
+    return(tibble(
       modo_parametros_scs = modo_parametros_scs,
       condicion_humedad = "derivado_desde_P0",
       CN_II = NA_real_,
@@ -260,15 +269,15 @@ obtener_parametros_scs <- function() {
       lambda_Ia = lambda_Ia
     ))
   }
-  
+
   if (modo_parametros_scs == "P0_manual") {
     Ia_mm <- as.numeric(P0_manual_mm)
     if (!is.finite(Ia_mm) || Ia_mm < 0) stop("P0_manual_mm no es valido.")
-    
+
     S_mm <- Ia_mm / lambda_Ia
     CN <- 25400 / (S_mm + 254)
-    
-    return(tibble::tibble(
+
+    return(tibble(
       modo_parametros_scs = modo_parametros_scs,
       condicion_humedad = "derivado_desde_P0",
       CN_II = NA_real_,
@@ -278,7 +287,7 @@ obtener_parametros_scs <- function() {
       lambda_Ia = lambda_Ia
     ))
   }
-  
+
   stop("modo_parametros_scs no reconocido: ", modo_parametros_scs)
 }
 
@@ -304,7 +313,7 @@ calcular_Pe_acumulada <- function(P_acum_mm, S_mm, Ia_mm) {
     0,
     (P_acum_mm - Ia_mm)^2 / (P_acum_mm - Ia_mm + S_mm)
   )
-  
+
   Pe[!is.finite(Pe)] <- NA_real_
   Pe
 }
@@ -355,7 +364,7 @@ resumen <- lluvia_efectiva %>%
     n_bloques = n(),
     dt_min = first(dt_min),
     duracion_total_h = first(duracion_total_h),
-    tc_h = ifelse("tc_h" %in% names(cur_data()), first(tc_h), NA_real_),
+    tc_h = if ("tc_h" %in% names(lluvia_efectiva)) first(tc_h) else NA_real_,
     P_total_mm = sum(P_incremental_mm, na.rm = TRUE),
     Pe_total_mm = sum(Pe_incremental_mm, na.rm = TRUE),
     coef_escorrentia_evento = ifelse(P_total_mm > 0, Pe_total_mm / P_total_mm, 0),
@@ -388,9 +397,14 @@ write_csv(resumen, salida_lluvia_efectiva_resumen)
 
 # 11. FIGURAS ====
 
+orden_T <- sort(unique(lluvia_efectiva$T_anios))
+
 lluvia_plot <- lluvia_efectiva %>%
   mutate(
-    T_label = paste0("T = ", T_anios, " años")
+    T_label = factor(
+      paste0("T = ", T_anios, " años"),
+      levels = paste0("T = ", orden_T, " años")
+    )
   ) %>%
   select(
     T_anios, T_label, bloque, tiempo_inicio_h, dt_h,
@@ -440,7 +454,10 @@ print(g_hiet)
 
 acum_plot <- lluvia_efectiva %>%
   mutate(
-    T_label = paste0("T = ", T_anios, " años")
+    T_label = factor(
+      paste0("T = ", T_anios, " años"),
+      levels = paste0("T = ", orden_T, " años")
+    )
   ) %>%
   select(
     T_anios, T_label, tiempo_fin_h,
@@ -464,7 +481,7 @@ g_acum <- ggplot(
   aes(x = tiempo_fin_h, y = P_mm, linetype = tipo)
 ) +
   geom_line(linewidth = 0.8) +
-  facet_wrap(~ T_label, scales = "free_y") +
+  facet_wrap(~ T_label, ncol = 3, scales = "free_y") +
   labs(
     title = "Lluvia acumulada bruta y efectiva",
     subtitle = paste0(

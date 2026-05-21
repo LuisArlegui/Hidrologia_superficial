@@ -30,12 +30,8 @@ library(tibble)
 
 # 1. CONFIGURACION GENERAL ====
 
-if (file.exists("scripts/00_configuracion.R")) {
-  source("scripts/00_configuracion.R")
-}
-
-if (file.exists("scripts/000_configuracion.R")) {
-  source("scripts/000_configuracion.R")
+if (file.exists("scripts/000_rutas_y_capas.R")) {
+  source("scripts/000_rutas_y_capas.R")
 }
 
 dir.create("salidas/tablas", recursive = TRUE, showWarnings = FALSE)
@@ -47,11 +43,7 @@ dir.create("salidas/figuras", recursive = TRUE, showWarnings = FALSE)
 archivo_curva_014 <- "salidas/tablas/014_curva_tiempo_area_Clark.csv"
 archivo_resumen_014 <- "salidas/tablas/014_resumen_tiempo_area_Clark.csv"
 
-archivos_010_candidatos <- c(
-  "salidas/tablas/010_lluvia_efectiva_SCS_CN_largo.csv",
-  "salidas/tablas/010_lluvia_efectiva_largo.csv",
-  "salidas/tablas/010_hietograma_efectivo_largo.csv"
-)
+archivo_010 <- "salidas/tablas/010_lluvia_efectiva_SCS_CN_largo.csv"
 
 salida_HU_largo <- "salidas/tablas/015_HU_Clark_largo.csv"
 salida_HU_base <- "salidas/tablas/015_HU_Clark_base.csv"
@@ -91,31 +83,23 @@ duplicar_por_periodo_retorno <- TRUE
 
 # 4. FUNCIONES AUXILIARES ====
 
-primer_archivo_existente <- function(rutas, obligatorio = FALSE, etiqueta = "archivo") {
-  existe <- rutas[file.exists(rutas)]
-  if (length(existe) > 0) return(existe[1])
-  if (obligatorio) {
-    stop(
-      "No se encontro ", etiqueta, ". Candidatos:\n",
-      paste(rutas, collapse = "\n")
-    )
-  }
-  return(NA_character_)
-}
-
 obtener_valor_resumen <- function(resumen, candidatas, defecto = NA_real_) {
   col <- candidatas[candidatas %in% names(resumen)]
   if (length(col) == 0) return(defecto)
+
   val <- suppressWarnings(as.numeric(resumen[[col[1]]][1]))
   if (!is.finite(val)) return(defecto)
+
   val
 }
 
 extraer_dt_min_010 <- function(lluvia_010) {
   if (is.null(lluvia_010)) return(NA_real_)
   if (!"dt_min" %in% names(lluvia_010)) return(NA_real_)
+
   val <- unique(suppressWarnings(as.numeric(lluvia_010$dt_min)))
   val <- val[is.finite(val) & val > 0]
+
   if (length(val) == 0) return(NA_real_)
   val[1]
 }
@@ -132,29 +116,32 @@ calcular_K_h <- function(tc_h) {
   } else {
     stop("modo_K no reconocido: ", modo_K)
   }
+
   if (!is.finite(K_h) || K_h <= 0) stop("K_h no es valido.")
+
   K_h
 }
 
 normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
   nms <- names(curva)
-  
+
   col_t <- c(
     "tiempo_h", "tiempo_fin_h", "tiempo_viaje_h", "tiempo_acumulado_h",
     "tiempo_viaje_acumulado_h", "t_h"
   )
   col_t <- col_t[col_t %in% nms]
+
   if (length(col_t) == 0) {
     curva$tiempo_h <- seq(dt_h, by = dt_h, length.out = nrow(curva))
     col_t <- "tiempo_h"
   } else {
     col_t <- col_t[1]
   }
-  
+
   curva <- curva %>%
     mutate(tiempo_h = as.numeric(.data[[col_t]])) %>%
     arrange(tiempo_h)
-  
+
   if ("area_intervalo_km2" %in% nms) {
     curva$area_intervalo_km2_calc <- as.numeric(curva$area_intervalo_km2)
   } else if ("area_km2_intervalo" %in% nms) {
@@ -169,6 +156,7 @@ normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
       "area_acumulada_fraccion", "area_acumulada_km2", "A_acumulada_km2"
     )
     col_acum <- col_acum[col_acum %in% nms]
+
     if (length(col_acum) == 0) {
       stop(
         "No se reconoce la estructura de ", archivo_curva_014, ".\n",
@@ -176,17 +164,20 @@ normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
         "Columnas disponibles: ", paste(nms, collapse = ", ")
       )
     }
+
     col_acum <- col_acum[1]
     acum <- as.numeric(curva[[col_acum]])
+
     if (max(acum, na.rm = TRUE) <= 1.5) {
       fraccion_acum <- acum
     } else {
       fraccion_acum <- acum / A_km2
     }
+
     fraccion_acum <- pmin(pmax(fraccion_acum, 0), 1)
     curva$area_intervalo_km2_calc <- c(fraccion_acum[1], diff(fraccion_acum)) * A_km2
   }
-  
+
   curva <- curva %>%
     mutate(
       area_intervalo_km2_calc = if_else(
@@ -195,12 +186,13 @@ normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
         0
       )
     )
-  
+
   suma_area <- sum(curva$area_intervalo_km2_calc, na.rm = TRUE)
+
   if (!is.finite(suma_area) || suma_area <= 0) {
     stop("El histograma tiempo-area tiene area nula o no valida.")
   }
-  
+
   curva <- curva %>%
     mutate(
       area_intervalo_km2 = area_intervalo_km2_calc * A_km2 / suma_area,
@@ -209,56 +201,66 @@ normalizar_histograma_tiempo_area <- function(curva, A_km2, dt_h) {
       tiempo_inicio_h = pmax(tiempo_h - dt_h, 0),
       tiempo_centro_h = tiempo_h - dt_h / 2
     )
-  
+
   curva
 }
 
 construir_HU_Clark_base <- function(hist_ta, A_km2, tc_h, dt_h, K_h) {
   dt_s <- dt_h * 3600
   volumen_unitario_m3 <- A_km2 * 1000 # 1 mm sobre 1 km2 = 1000 m3
-  
+
+  # Hidrograma de traslacion: cada intervalo de area aporta 1 mm durante dt.
   I_m3_s <- hist_ta$area_intervalo_km2 * 1000 / dt_s
-  
+
   n_extra <- ceiling(max(
     factor_cola_K * K_h / dt_h,
     factor_cola_Tc * tc_h / dt_h,
     num_pasos_minimos_cola
   ))
+
   n_extra <- min(n_extra, num_pasos_maximos_extra)
-  
+
   I_ext <- c(I_m3_s, rep(0, n_extra))
   tiempo_h <- seq(0, by = dt_h, length.out = length(I_ext))
-  
+
+  # Almacenamiento lineal: solucion exacta para entrada constante por intervalo.
   alpha <- exp(-dt_h / K_h)
   O <- numeric(length(I_ext))
   O[1] <- I_ext[1] * (1 - alpha)
+
   if (length(I_ext) > 1) {
     for (i in 2:length(I_ext)) {
       O[i] <- O[i - 1] * alpha + I_ext[i] * (1 - alpha)
     }
   }
-  
+
+  # Recorte suave de cola cuando el caudal es despreciable, manteniendo un minimo.
   Qp_tmp <- max(O, na.rm = TRUE)
+
   if (is.finite(Qp_tmp) && Qp_tmp > 0) {
     idx_pico <- which.max(O)
     idx_cola <- which(O < umbral_cola_fraccion_Qp * Qp_tmp & seq_along(O) > idx_pico)
+
     if (length(idx_cola) > 0) {
       idx_fin <- max(idx_cola[1], idx_pico + num_pasos_minimos_cola)
       idx_fin <- min(idx_fin, length(O))
+
       O <- O[seq_len(idx_fin)]
       I_ext <- I_ext[seq_len(idx_fin)]
       tiempo_h <- tiempo_h[seq_len(idx_fin)]
     }
   }
-  
+
+  # Correccion de volumen para garantizar que el HU representa exactamente 1 mm.
   volumen_HU_m3 <- sum(O, na.rm = TRUE) * dt_s
   factor_correccion <- 1
+
   if (corregir_volumen && is.finite(volumen_HU_m3) && volumen_HU_m3 > 0) {
     factor_correccion <- volumen_unitario_m3 / volumen_HU_m3
     O <- O * factor_correccion
     volumen_HU_m3 <- sum(O, na.rm = TRUE) * dt_s
   }
-  
+
   tibble(
     paso = seq_along(tiempo_h),
     tiempo_h = tiempo_h,
@@ -283,8 +285,10 @@ if (!file.exists(archivo_curva_014)) {
 }
 
 if (!file.exists(archivo_resumen_014)) {
-  warning("No se encuentra el resumen del script 014: ", archivo_resumen_014,
-          ". Se intentaran inferir A, Tc y dt desde la curva.")
+  warning(
+    "No se encuentra el resumen del script 014: ", archivo_resumen_014,
+    ". Se intentaran inferir A, Tc y dt desde la curva."
+  )
 }
 
 
@@ -298,22 +302,16 @@ resumen_014 <- if (file.exists(archivo_resumen_014)) {
   tibble()
 }
 
-archivo_010 <- primer_archivo_existente(
-  archivos_010_candidatos,
-  obligatorio = FALSE,
-  etiqueta = "lluvia efectiva del script 010"
-)
-
 lluvia_010 <- NULL
-if (!is.na(archivo_010)) {
-  lluvia_010 <- read_csv(archivo_010, show_col_types = FALSE)
-}
 
-#-----------------------------------------------------------
-# Lectura opcional de dt desde 010 y 014
-#-----------------------------------------------------------
-# Se define aqui para evitar errores si alguno de los archivos no existe
-# o si no contiene la columna dt_min.
+if (file.exists(archivo_010)) {
+  lluvia_010 <- read_csv(archivo_010, show_col_types = FALSE)
+} else {
+  warning(
+    "No se encuentra la lluvia efectiva del script 010: ", archivo_010,
+    ". El HU de Clark no se duplicara por periodo de retorno."
+  )
+}
 
 dt_min_010 <- extraer_dt_min_010(lluvia_010)
 
@@ -361,17 +359,17 @@ if (!is.finite(dt_min_014)) {
 if (!is.finite(dt_min_014)) {
   col_t <- c("tiempo_h", "tiempo_fin_h", "tiempo_viaje_h", "tiempo_acumulado_h", "tiempo_viaje_acumulado_h")
   col_t <- col_t[col_t %in% names(curva_014)]
+
   if (length(col_t) > 0) {
     tt <- sort(unique(suppressWarnings(as.numeric(curva_014[[col_t[1]]]))))
     dif <- diff(tt)
     dif <- dif[is.finite(dif) & dif > 0]
+
     if (length(dif) > 0) dt_min_014 <- median(dif) * 60
   }
 }
 
-#-----------------------------------------------------------
-# Resolucion robusta de dt
-#-----------------------------------------------------------
+# Resolucion robusta de dt.
 # Prioridad:
 # 1) dt_min_manual si el usuario lo fija
 # 2) dt_min del script 010, para mantener coherencia con la convolucion
@@ -397,6 +395,7 @@ if (!is.finite(A_km2) || A_km2 <= 0) {
     "Columnas disponibles en 014_curva: ", paste(names(curva_014), collapse = ", ")
   )
 }
+
 if (!is.finite(tc_h) || tc_h <= 0) {
   stop(
     "No se pudo determinar tc_h de forma valida.\n",
@@ -404,6 +403,7 @@ if (!is.finite(tc_h) || tc_h <= 0) {
     "Columnas disponibles en 014_curva: ", paste(names(curva_014), collapse = ", ")
   )
 }
+
 if (!is.finite(dt_h) || dt_h <= 0) stop("No se pudo determinar dt_h de forma valida.")
 
 K_h <- calcular_K_h(tc_h)
@@ -452,6 +452,7 @@ HU_base <- HU_base %>%
 # 10. DUPLICAR POR PERIODOS DE RETORNO SI EXISTEN ====
 
 T_disponibles <- NULL
+
 if (duplicar_por_periodo_retorno && !is.null(lluvia_010) && "T_anios" %in% names(lluvia_010)) {
   T_disponibles <- sort(unique(suppressWarnings(as.numeric(lluvia_010$T_anios))))
   T_disponibles <- T_disponibles[is.finite(T_disponibles)]
@@ -578,7 +579,7 @@ cat("====================================================\n")
 cat("\nEntradas:\n")
 cat(archivo_curva_014, "\n")
 if (file.exists(archivo_resumen_014)) cat(archivo_resumen_014, "\n")
-if (!is.na(archivo_010)) cat(archivo_010, "\n")
+if (file.exists(archivo_010)) cat(archivo_010, "\n")
 
 cat("\nConfiguracion Clark:\n")
 cat("A =", round(A_km2, 4), "km2\n")
