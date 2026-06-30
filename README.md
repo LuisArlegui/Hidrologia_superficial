@@ -1,11 +1,11 @@
 # Hidrología superficial con R
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20287572-blue.svg)](https://doi.org/10.5281/zenodo.20287572)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21059640-blue.svg)](https://doi.org/10.5281/zenodo.21059640)
 
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
 
 [![R](https://img.shields.io/badge/language-R-blue.svg)](https://www.r-project.org/)
 
-[![Version](https://img.shields.io/badge/version-v1.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-v2.0-green.svg)]()
 
 Scripts de R para el análisis hidrológico de cuencas mediante:
 
